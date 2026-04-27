@@ -1,0 +1,27 @@
+{
+  "name": "tradesman-ai-triage-agent",
+  "version": "1.0.0",
+  "description": "Marketing voice call agent using Twilio and ElevenLabs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --check index.js"
+  },
+  "keywords": [
+    "twilio",
+    "elevenlabs",
+    "voice",
+    "marketing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.43.0",
+    "axios": "^1.9.0",
+    "body-parser": "^1.20.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "twilio": "^5.6.1"
+  }
+}

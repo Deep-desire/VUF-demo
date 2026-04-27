@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marketing Voice Agent Tester</title>
+    <style>
+      :root {
+        --bg-0: #f4f1ea;
+        --bg-1: #f8e9c4;
+        --ink: #1e1d1b;
+        --muted: #5e5b54;
+        --accent: #d36d32;
+        --accent-2: #2b6b52;
+        --card: #fffaf0;
+        --line: #e3d7c2;
+        --warn: #9a4d22;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Trebuchet MS", Tahoma, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 15% 10%, rgba(211, 109, 50, 0.22), transparent 32%),
+          radial-gradient(circle at 80% 25%, rgba(43, 107, 82, 0.2), transparent 40%),
+          linear-gradient(160deg, var(--bg-0), var(--bg-1));
+        min-height: 100vh;
+      }
+
+      .wrap {
+        width: min(1100px, 92vw);
+        margin: 40px auto;
+      }
+
+      .hero {
+        background: linear-gradient(135deg, rgba(255, 250, 240, 0.95), rgba(254, 241, 212, 0.9));
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 8px 30px rgba(36, 29, 17, 0.12);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        letter-spacing: 0.3px;
+        font-size: clamp(1.4rem, 3vw, 2rem);
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .status-row {
+        margin-top: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .pill {
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: #f5eee1;
+        border: 1px solid var(--line);
+        font-size: 0.9rem;
+      }
+
+      .grid {
+        margin-top: 20px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+        gap: 14px;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
+      }
+
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 1.05rem;
+      }
+
+      .field {
+        margin-bottom: 10px;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 0.87rem;
+        color: var(--muted);
+      }
+
+      input,
+      textarea,
+      button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        font-size: 0.95rem;
+      }
+
+      input,
+      textarea {
+        padding: 10px;
+        background: #fffdf8;
+      }
+
+      textarea {
+        min-height: 130px;
+        resize: vertical;
+      }
+
+      button {
+        margin-top: 6px;
+        padding: 10px 12px;
+        background: linear-gradient(120deg, var(--accent), #ec8a4e);
+        color: white;
+        border: none;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 16px rgba(211, 109, 50, 0.25);
+      }
+
+      .secondary {
+        background: linear-gradient(120deg, var(--accent-2), #3f9772);
+      }
+
+      pre {
+        margin: 10px 0 0;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        padding: 10px;
+        background: #fff;
+        min-height: 110px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      #activeTranscriptOut {
+        min-height: 230px;
+      }
+
+      .warn {
+        color: var(--warn);
+        font-size: 0.87rem;
+        margin-top: 8px;
+      }
+
+      .hint {
+        margin-top: 8px;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      .panel-subtitle {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .conversation-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .conversation-item {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        background: #fff;
+      }
+
+      .conversation-meta {
+        font-size: 0.84rem;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      .conversation-transcript {
+        margin: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        background: #fffdf8;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 0.85rem;
+      }
+
+      @media (max-width: 700px) {
+        .wrap {
+          margin: 20px auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="hero">
+        <h1>Marketing Voice Agent Test Console</h1>
+        <p>Test outbound calling flow without using Twilio Console pages.</p>
+        <div class="status-row">
+          <span class="pill" id="status-health">Health: Checking...</span>
+          <span class="pill" id="status-company">Company: Checking...</span>
+          <span class="pill" id="status-twilio">Twilio: Checking...</span>
+          <span class="pill" id="status-agent">Agent: Checking...</span>
+          <span class="pill" id="status-public">Public URL: Checking...</span>
+        </div>
+        <div class="field" style="margin-top:12px;">
+          <label for="globalPhone">Your Test Number (E.164, for example +27871234567)</label>
+          <input id="globalPhone" value="+27700000001" />
+          <button id="applyGlobalPhone">Apply Number To Call Field</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>1) Start Marketing Call To Prospect</h2>
+          <div class="field">
+            <label for="realTo">Call This Number</label>
+            <input id="realTo" value="+27700000001" />
+          </div>
+          <button id="startRealCall">Start Real Call</button>
+          <div class="hint">This places a real outbound call from your Twilio number and connects to ElevenLabs voice AI. Max call length is controlled by MAX_CALL_SECONDS.</div>
+          <pre id="realCallOut"></pre>
+        </article>
+
+        <article class="card">
+          <h2>2) All System Logs</h2>
+          <p class="panel-subtitle">Live view from conversation-history.jsonl (newest first).</p>
+          <pre id="allLogsOut">Loading logs...</pre>
+        </article>
+
+        <article class="card">
+          <h2>3) Current Call Full Transcript</h2>
+          <p class="panel-subtitle">Latest 5 calls (newest first) with full human-readable transcripts.</p>
+          <div id="activeTranscriptOut" class="conversation-list">Loading recent transcripts...</div>
+        </article>
+
+      </section>
+    </main>
+
+    <script>
+      const query = new URLSearchParams(window.location.search);
+      const queryApiBase = String(query.get('apiBase') || '').trim();
+      const queryApiPort = String(query.get('apiPort') || '').trim();
+      const storedApiBase = String(localStorage.getItem('testerApiBase') || '').trim();
+      const storedApiPort = String(localStorage.getItem('testerApiPort') || '').trim();
+      const isFileMode = window.location.protocol === 'file:';
+      const disableAutoRedirect = String(query.get('noAutoRedirect') || '').trim() === '1';
+      const sameOriginBase = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+        ? window.location.origin.replace(/\/+$/, '')
+        : '';
+      let API_BASE = (
+        queryApiBase ||
+        (isFileMode ? storedApiBase : '')
+      ).replace(/\/+$/, '');
+      const RECENT_TRANSCRIPT_LIMIT = 5;
+
+      if (isFileMode && queryApiBase) {
+        localStorage.setItem('testerApiBase', queryApiBase);
+      }
+
+      if (queryApiPort && /^\d{1,5}$/.test(queryApiPort)) {
+        localStorage.setItem('testerApiPort', queryApiPort);
+      }
+
+      if (!isFileMode && storedApiBase) {
+        localStorage.removeItem('testerApiBase');
+      }
+
+      function apiUrl(path) {
+        const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+        return API_BASE ? `${API_BASE}${normalizedPath}` : normalizedPath;
+      }
+
+      function isFileProtocol() {
+        return isFileMode;
+      }
+
+      function isLocalHostName(hostname) {
+        const normalized = String(hostname || '').trim().toLowerCase();
+        return normalized === 'localhost' || normalized === '127.0.0.1';
+      }
+
+      function isHttpLocalhostBase(rawBase) {
+        const normalized = String(rawBase || '').trim();
+        if (!normalized) {
+          return false;
+        }
+
+        try {
+          const parsed = new URL(normalized);
+          return parsed.protocol === 'http:' && isLocalHostName(parsed.hostname);
+        } catch {
+          return false;
+        }
+      }
+
+      function parsePort(rawPort) {
+        const value = String(rawPort || '').trim();
+        if (!/^\d{1,5}$/.test(value)) {
+          return '';
+        }
+
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric < 1 || numeric > 65535) {
+          return '';
+        }
+
+        return String(numeric);
+      }
+
+      function getPortFromBase(base) {
+        const normalized = String(base || '').trim();
+        if (!normalized) {
+          return '';
+        }
+
+        try {
+          const url = new URL(normalized);
+          if (url.port) {
+            return parsePort(url.port);
+          }
+
+          if (url.protocol === 'http:') {
+            return '80';
+          }
+
+          if (url.protocol === 'https:') {
+            return '443';
+          }
+        } catch {
+          return '';
+        }
+
+        return '';
+      }
+
+      function getDetectedApiPort() {
+        const candidates = [
+          parsePort(queryApiPort),
+          parsePort(storedApiPort),
+          parsePort(window.location.port),
+          getPortFromBase(queryApiBase),
+          getPortFromBase(storedApiBase),
+          getPortFromBase(API_BASE)
+        ];
+
+        for (const candidate of candidates) {
+          if (candidate) {
+            return candidate;
+          }
+        }
+
+        return '';
+      }
+
+      function getLocalApiBaseCandidates() {
+        const port = getDetectedApiPort();
+        const suffix = port ? `:${port}` : '';
+
+        return [
+          `http://localhost${suffix}`,
+          `http://127.0.0.1${suffix}`
+        ];
+      }
+
+      function normalizeApiBase(raw) {
+        const trimmed = String(raw || '').trim();
+        if (!trimmed) {
+          return '';
+        }
+
+        try {
+          const hasScheme = /^[a-z]+:\/\//i.test(trimmed);
+          const normalized = new URL(hasScheme ? trimmed : `http://${trimmed}`);
+          return normalized.origin.replace(/\/+$/, '');
+        } catch {
+          return '';
+        }
+      }
+
+      async function ensureApiBaseForFileMode() {
+        if (!isFileProtocol()) {
+          return true;
+        }
+
+        if (API_BASE) {
+          return true;
+        }
+
+        const portHint = getDetectedApiPort();
+        const defaultHint = portHint ? `localhost:${portHint}` : 'localhost:<port>';
+        const entered = window.prompt(
+          `Enter API host for tester (example ${defaultHint})`,
+          defaultHint
+        );
+
+        const normalized = normalizeApiBase(entered);
+        if (!normalized) {
+          return false;
+        }
+
+        API_BASE = normalized;
+        localStorage.setItem('testerApiBase', normalized);
+
+        const detectedPort = getPortFromBase(normalized);
+        if (detectedPort) {
+          localStorage.setItem('testerApiPort', detectedPort);
+        }
+
+        return true;
+      }
+
+      function getLocalTesterUrl() {
+        const preferredBase = String(getLocalApiBaseCandidates()[0] || '').trim();
+        if (!preferredBase) {
+          return '';
+        }
+
+        return `${preferredBase}/tester?apiBase=${encodeURIComponent(preferredBase)}&noAutoRedirect=1`;
+      }
+
+      function candidateBlockedByMixedContent(candidateBase) {
+        if (isFileProtocol()) {
+          return false;
+        }
+
+        if (window.location.protocol !== 'https:') {
+          return false;
+        }
+
+        return String(candidateBase || '').trim().toLowerCase().startsWith('http://');
+      }
+
+      function getApiBaseCandidates({ preferCurrentOrigin = true } = {}) {
+        const candidates = [];
+        const append = (value) => {
+          const normalized = String(value || '').trim().replace(/\/+$/, '');
+          if (!normalized) {
+            return;
+          }
+
+          if (!candidates.includes(normalized)) {
+            candidates.push(normalized);
+          }
+        };
+
+        if (preferCurrentOrigin && sameOriginBase) {
+          append(sameOriginBase);
+        }
+
+        append(queryApiBase);
+        append(API_BASE);
+
+        if (isFileProtocol()) {
+          append(storedApiBase);
+        }
+
+        for (const localCandidate of getLocalApiBaseCandidates()) {
+          append(localCandidate);
+        }
+
+        if (!preferCurrentOrigin && sameOriginBase) {
+          append(sameOriginBase);
+        }
+
+        return candidates;
+      }
+
+      async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      async function probeApiBase(candidateBase) {
+        const normalized = String(candidateBase || '').trim().replace(/\/+$/, '');
+        if (!normalized) {
+          return false;
+        }
+
+        try {
+          // Prefer a project-specific endpoint so we do not lock onto unrelated services.
+          const response = await fetchWithTimeout(`${normalized}/tester/config-status`, { method: 'GET' }, 2500);
+          return response.ok;
+        } catch {
+          try {
+            const healthResponse = await fetchWithTimeout(`${normalized}/health`, { method: 'GET' }, 2500);
+            return healthResponse.ok;
+          } catch {
+            return false;
+          }
+        }
+      }
+
+      async function resolveApiBase({ preferCurrentOrigin = true } = {}) {
+        const candidates = getApiBaseCandidates({ preferCurrentOrigin });
+
+        for (const candidate of candidates) {
+          if (candidateBlockedByMixedContent(candidate)) {
+            continue;
+          }
+
+          if (await probeApiBase(candidate)) {
+            API_BASE = (sameOriginBase && candidate === sameOriginBase) ? '' : candidate;
+
+            if (isFileProtocol()) {
+              localStorage.setItem('testerApiBase', candidate);
+            }
+
+            return true;
+          }
+        }
+
+        // Keep last known API base when nothing is reachable, so diagnostics still show attempted URL.
+        return false;
+      }
+
+      async function requestApi(path, options = {}, timeoutMs = 10000) {
+        if (isFileProtocol() && !API_BASE) {
+          const resolved = await resolveApiBase({ preferCurrentOrigin: false });
+          if (!resolved) {
+            await ensureApiBaseForFileMode();
+          }
+        }
+
+        const initialUrl = apiUrl(path);
+
+        try {
+          const response = await fetchWithTimeout(initialUrl, options, timeoutMs);
+          return { response, requestUrl: initialUrl };
+        } catch (firstError) {
+          const previousBase = API_BASE;
+          await resolveApiBase({ preferCurrentOrigin: false });
+          if (isFileProtocol() && !API_BASE) {
+            await ensureApiBaseForFileMode();
+          }
+          const retryUrl = apiUrl(path);
+
+          if (retryUrl === initialUrl && API_BASE === previousBase) {
+            firstError.attemptedUrl = initialUrl;
+            throw firstError;
+          }
+
+          try {
+            const response = await fetchWithTimeout(retryUrl, options, timeoutMs);
+            return { response, requestUrl: retryUrl };
+          } catch (secondError) {
+            secondError.firstAttemptUrl = initialUrl;
+            secondError.attemptedUrl = retryUrl;
+            throw secondError;
+          }
+        }
+      }
+
+      function maybeAutoSwitchToLocalTesterOnNetworkError(error) {
+        if (isFileProtocol() || disableAutoRedirect) {
+          return false;
+        }
+
+        if (window.location.protocol !== 'https:') {
+          return false;
+        }
+
+        if (isLocalHostName(window.location.hostname)) {
+          return false;
+        }
+
+        const localTesterUrl = getLocalTesterUrl();
+        if (!localTesterUrl) {
+          return false;
+        }
+
+        const attemptedUrl = String(error?.attemptedUrl || '').trim();
+        const firstAttemptUrl = String(error?.firstAttemptUrl || '').trim();
+        const sameOriginAttempt = attemptedUrl.startsWith('/') || firstAttemptUrl.startsWith('/');
+
+        if (!sameOriginAttempt) {
+          return false;
+        }
+
+        window.location.assign(localTesterUrl);
+        return true;
+      }
+
+      async function getTextResponse(response) {
+        const text = await response.text();
+        return text || '(empty response)';
+      }
+
+      function toIsoText(value) {
+        const text = String(value || '').trim();
+        if (!text) {
+          return '-';
+        }
+
+        const parsed = new Date(text);
+        if (Number.isNaN(parsed.getTime())) {
+          return text;
+        }
+
+        return parsed.toLocaleString();
+      }
+
+      function escapeHtml(value) {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function buildCallTranscriptQuery(row) {
+        const callSid = String(row?.callSid || '').trim();
+        const callerPhone = String(row?.callerPhone || '').trim();
+
+        if (!callSid && !callerPhone) {
+          return '';
+        }
+
+        const query = new URLSearchParams();
+        if (callSid) {
+          query.set('callSid', callSid);
+        }
+
+        if (callerPhone) {
+          query.set('callerPhone', callerPhone);
+        }
+
+        return query.toString();
+      }
+
+      function extractLatestCallRowsFromLogs(entries, limit = RECENT_TRANSCRIPT_LIMIT) {
+        const rows = [];
+        const seen = new Set();
+        const list = Array.isArray(entries) ? entries : [];
+
+        for (const entry of list) {
+          if (!entry || typeof entry !== 'object') {
+            continue;
+          }
+
+          const callSid = String(entry?.callSid || '').trim();
+          if (!callSid || seen.has(callSid)) {
+            continue;
+          }
+
+          const source = String(entry?.source || '').trim();
+          const event = String(entry?.event || '').trim();
+          const isCallLifecycle =
+            (source === 'twilio' && event === 'call-status')
+            || (source === 'tester' && event === 'start-call-queued')
+            || (source === 'conversation-store' && (event === 'caller-picked-up' || event === 'full-conversation-finalized'));
+
+          if (!isCallLifecycle) {
+            continue;
+          }
+
+          seen.add(callSid);
+          rows.push({
+            callSid,
+            callerPhone: String(entry?.to || entry?.callerPhone || '').trim(),
+            callStatus: String(entry?.callStatus || '').trim(),
+            lastAt: String(entry?.loggedAt || '').trim(),
+            startedAt: String(entry?.startedAt || entry?.loggedAt || '').trim()
+          });
+
+          if (rows.length >= limit) {
+            break;
+          }
+        }
+
+        return rows;
+      }
+
+      async function resolveCallTranscriptRow(row) {
+        const baseRow = {
+          ...row,
+          callSid: String(row?.callSid || '').trim(),
+          callStatus: String(row?.callStatus || 'unknown').trim(),
+          conversationId: String(row?.conversationId || '').trim(),
+          callerPhone: String(row?.callerPhone || '').trim(),
+          startedAt: row?.startedAt || '',
+          lastAt: row?.lastAt || '',
+          messageCount: Number(Array.isArray(row?.messages) ? row.messages.length : 0),
+          transcriptText: ''
+        };
+
+        const query = buildCallTranscriptQuery(baseRow);
+        if (!query) {
+          return baseRow;
+        }
+
+        try {
+          const { response } = await requestApi(`/tester/call-transcript?${query}`, { method: 'GET' }, 10000);
+          const text = await getTextResponse(response);
+          if (!response.ok) {
+            return baseRow;
+          }
+
+          const parsed = JSON.parse(text);
+          return {
+            ...baseRow,
+            callSid: String(parsed?.callSid || baseRow.callSid || '').trim(),
+            callStatus: String(parsed?.callStatus || baseRow.callStatus || 'unknown').trim(),
+            conversationId: String(parsed?.conversationId || baseRow.conversationId || '').trim(),
+            callerPhone: String(parsed?.callerPhone || baseRow.callerPhone || '').trim(),
+            startedAt: parsed?.startedAt || baseRow.startedAt,
+            lastAt: parsed?.lastAt || baseRow.lastAt,
+            messageCount: Number(parsed?.messageCount || baseRow.messageCount || 0),
+            transcriptText: String(parsed?.transcriptText || '').trim()
+          };
+        } catch {
+          return baseRow;
+        }
+      }
+
+      function renderRecentTranscriptPanel(rows) {
+        const panel = document.getElementById('activeTranscriptOut');
+        if (!panel) {
+          return;
+        }
+
+        const list = Array.isArray(rows) ? rows : [];
+        if (list.length === 0) {
+          panel.innerHTML = '<div class="conversation-item"><div class="conversation-meta">No call transcripts found yet.</div></div>';
+          return;
+        }
+
+        panel.innerHTML = list.map((row, index) => {
+          const transcript = escapeHtml(String(row?.transcriptText || '').trim())
+            || 'Transcript not available yet. Waiting for ElevenLabs post-call transcript payload.';
+
+          return `
+            <div class="conversation-item">
+              <div class="conversation-meta">
+                <strong>#${index + 1}</strong> | <strong>CallSid:</strong> ${escapeHtml(String(row?.callSid || '-'))}<br/>
+                <strong>Status:</strong> ${escapeHtml(String(row?.callStatus || 'unknown'))} | <strong>Caller:</strong> ${escapeHtml(String(row?.callerPhone || '-'))}<br/>
+                <strong>Conversation ID:</strong> ${escapeHtml(String(row?.conversationId || '-'))}<br/>
+                <strong>Started:</strong> ${escapeHtml(toIsoText(row?.startedAt || ''))} | <strong>Last Update:</strong> ${escapeHtml(toIsoText(row?.lastAt || ''))}<br/>
+                <strong>Messages:</strong> ${Number(row?.messageCount || 0)}
+              </div>
+              <pre class="conversation-transcript">${transcript}</pre>
+            </div>
+          `;
+        }).join('');
+      }
+
+      async function refreshRecentTranscriptPanel() {
+        const panel = document.getElementById('activeTranscriptOut');
+        if (!panel) {
+          return;
+        }
+
+        try {
+          const { response } = await requestApi('/tester/all-logs?limit=400', { method: 'GET' }, 10000);
+          const text = await getTextResponse(response);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${text}`);
+          }
+
+          const parsed = JSON.parse(text);
+          const rows = extractLatestCallRowsFromLogs(parsed?.entries || [], RECENT_TRANSCRIPT_LIMIT);
+          const resolvedRows = await Promise.all(rows.map((row) => resolveCallTranscriptRow(row)));
+          renderRecentTranscriptPanel(resolvedRows);
+        } catch (error) {
+          panel.innerHTML = `<div class="conversation-item"><div class="conversation-meta">Unable to load transcripts: ${escapeHtml(error?.message || 'Unknown error')}</div></div>`;
+        }
+      }
+
+      async function refreshTrackingPanels() {
+        const allLogsOut = document.getElementById('allLogsOut');
+
+        try {
+          const logsResult = await requestApi('/tester/all-logs?limit=60', { method: 'GET' }, 10000);
+          const logsText = await getTextResponse(logsResult.response);
+
+          if (!logsResult.response.ok) {
+            allLogsOut.textContent = `HTTP ${logsResult.response.status} from ${logsResult.requestUrl}\n${logsText}`;
+          } else {
+            try {
+              const parsed = JSON.parse(logsText);
+              const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+              allLogsOut.textContent = JSON.stringify(entries, null, 2);
+            } catch (_err) {
+              allLogsOut.textContent = logsText;
+            }
+          }
+        } catch (error) {
+          const requestUrl = error?.attemptedUrl || apiUrl('/tester/all-logs');
+          const firstAttemptUrl = error?.firstAttemptUrl;
+          const message =
+            'Network error while loading logs from ' + requestUrl + '\n'
+            + (firstAttemptUrl && firstAttemptUrl !== requestUrl ? `First attempt URL: ${firstAttemptUrl}\n` : '')
+            + 'Current API base: ' + (API_BASE || '(same-origin)') + '\n'
+            + 'Reason: ' + (error?.message || 'Unknown fetch error');
+
+          if (allLogsOut) {
+            allLogsOut.textContent = message;
+          }
+        }
+
+        await refreshRecentTranscriptPanel();
+      }
+
+      async function refreshStatus() {
+        const healthEl = document.getElementById('status-health');
+        const companyEl = document.getElementById('status-company');
+        const twilioEl = document.getElementById('status-twilio');
+        const agentEl = document.getElementById('status-agent');
+        const publicEl = document.getElementById('status-public');
+
+        try {
+          const { response } = await requestApi('/health', { method: 'GET' }, 6000);
+          const health = await response.json();
+          healthEl.textContent = 'Health: ' + (health.status || 'unknown');
+        } catch {
+          healthEl.textContent = isFileProtocol()
+            ? 'Health: unreachable (set ?apiBase=http://localhost:<port> if needed)'
+            : 'Health: unreachable';
+        }
+
+        try {
+          const { response } = await requestApi('/tester/config-status', { method: 'GET' }, 6000);
+          const cfg = await response.json();
+          companyEl.textContent = 'Company: ' + (cfg.companyName || 'Desireinfoweb');
+          twilioEl.textContent = 'Twilio: ' + (cfg.hasTwilioClient ? 'configured' : 'missing env');
+          agentEl.textContent = 'Agent: ElevenLabs webhook mode';
+
+          const configuredPublicUrl = cfg.publicBaseUrl ? cfg.publicBaseUrl : 'missing PUBLIC_BASE_URL';
+          const resolvedPublicUrl = cfg.resolvedPublicBaseUrl ? cfg.resolvedPublicBaseUrl : configuredPublicUrl;
+          try {
+            const { response: publicHealthResponse } = await requestApi('/tester/public-url-health', { method: 'GET' }, 7000);
+            const publicHealth = await publicHealthResponse.json();
+
+            if (publicHealth?.ok) {
+              publicEl.textContent = 'Public URL: online (' + resolvedPublicUrl + ')';
+            } else {
+              const reason = publicHealth?.reason ? ` | ${publicHealth.reason}` : '';
+              publicEl.textContent = 'Public URL: offline (' + resolvedPublicUrl + ')' + reason;
+            }
+          } catch {
+            publicEl.textContent = 'Public URL: ' + resolvedPublicUrl;
+          }
+        } catch {
+          companyEl.textContent = 'Company: unknown';
+          twilioEl.textContent = 'Twilio: unknown';
+          agentEl.textContent = 'Agent: unknown';
+          publicEl.textContent = 'Public URL: unknown';
+        }
+      }
+
+      document.getElementById('applyGlobalPhone').addEventListener('click', () => {
+        const phone = document.getElementById('globalPhone').value.trim();
+        document.getElementById('realTo').value = phone;
+      });
+
+      function handleStartCallSuccess(responseText, to) {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(String(responseText || '{}'));
+        } catch {
+          parsed = null;
+        }
+
+        const callSid = String(parsed?.callSid || '').trim();
+        if (callSid) {
+          refreshRecentTranscriptPanel();
+        }
+      }
+
+      document.getElementById('startRealCall').addEventListener('click', async () => {
+        const output = document.getElementById('realCallOut');
+        output.textContent = 'Running...';
+        const to = document.getElementById('realTo').value.trim();
+        const canonicalStartPath = '/tester/start-call';
+        const legacyStartPath = '/tester/launch-outbound';
+
+        try {
+          const { response, requestUrl } = await requestApi(canonicalStartPath, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to })
+          }, 45000);
+
+          const text = await getTextResponse(response);
+          output.textContent = response.ok
+            ? text
+            : `HTTP ${response.status} from ${requestUrl}\n${text}`;
+
+          if (response.ok) {
+            handleStartCallSuccess(text, to);
+          }
+
+          await refreshTrackingPanels();
+        } catch (error) {
+          let requestError = error;
+
+          // Backward compatibility for older deployments that only exposed /tester/launch-outbound.
+          try {
+            const { response, requestUrl } = await requestApi(legacyStartPath, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ to })
+            }, 45000);
+            const text = await getTextResponse(response);
+            output.textContent = response.ok
+              ? text
+              : `HTTP ${response.status} from ${requestUrl}\n${text}`;
+
+            if (response.ok) {
+              handleStartCallSuccess(text, to);
+            }
+
+            await refreshTrackingPanels();
+            return;
+          } catch (legacyPostError) {
+            requestError = legacyPostError;
+          }
+
+          // Some strict browser/network paths fail JSON POST fetch while allowing plain GET.
+          // Retry once using query-string fallback before showing a hard network error.
+          try {
+            const query = new URLSearchParams({ to }).toString();
+            const { response, requestUrl } = await requestApi(`${legacyStartPath}?${query}`, {
+              method: 'GET'
+            }, 45000);
+            const text = await getTextResponse(response);
+            output.textContent = response.ok
+              ? text
+              : `HTTP ${response.status} from ${requestUrl}\n${text}`;
+
+            if (response.ok) {
+              handleStartCallSuccess(text, to);
+            }
+
+            await refreshTrackingPanels();
+            return;
+          } catch (legacyGetError) {
+            requestError = legacyGetError;
+            // Continue to existing network error handling with the original error.
+          }
+
+          if (maybeAutoSwitchToLocalTesterOnNetworkError(requestError)) {
+            output.textContent = `Current host is unreachable. Switching to local tester ${getLocalTesterUrl() || 'on localhost'}...`;
+            return;
+          }
+
+          const requestUrl = requestError?.attemptedUrl || apiUrl(canonicalStartPath);
+          const firstAttemptUrl = requestError?.firstAttemptUrl;
+          const localTesterTip =
+            !isFileProtocol() && !isLocalHostName(window.location.hostname)
+              ? `\nFallback: open ${getLocalTesterUrl() || 'http://localhost:<port>/tester?apiBase=http://localhost:<port>'}`
+              : '';
+          output.textContent =
+            'Network error while calling ' +
+            requestUrl +
+            '\n' +
+            (firstAttemptUrl && firstAttemptUrl !== requestUrl
+              ? 'First attempt URL: ' + firstAttemptUrl + '\n'
+              : '') +
+            'Current API base: ' + (API_BASE || '(same-origin)') + '\n' +
+            'Reason: ' +
+            (requestError && requestError.message ? requestError.message : 'Unknown fetch error') +
+            '\n' +
+            'Tip: open /tester from the same backend origin, or set ?apiBase=http://localhost:<port>' +
+            localTesterTip;
+        }
+      });
+
+      async function initTester() {
+        // Avoid mixed-content/network failures when tester is opened on HTTPS/ngrok with
+        // a stale http://localhost API base from earlier local testing.
+        if (!isFileProtocol() && window.location.protocol === 'https:' && isHttpLocalhostBase(API_BASE)) {
+          API_BASE = '';
+          localStorage.removeItem('testerApiBase');
+        }
+
+        await resolveApiBase();
+
+        if (isFileProtocol() && !API_BASE) {
+          await ensureApiBaseForFileMode();
+        }
+
+        if (isFileProtocol() && API_BASE && !disableAutoRedirect) {
+          // Running from file:// is brittle for browser networking and CORS. Move to served tester page when possible.
+          const targetUrl = `${API_BASE}/tester`;
+          window.location.replace(targetUrl);
+          return;
+        }
+
+        await refreshStatus();
+        await refreshTrackingPanels();
+
+        setInterval(() => {
+          refreshTrackingPanels();
+        }, 3000);
+
+        if (isFileProtocol()) {
+          const healthEl = document.getElementById('status-health');
+          healthEl.textContent = `Health: file mode -> API ${apiUrl('/health')}`;
+        }
+      }
+
+      initTester();
+    </script>
+  </body>
+</html>
