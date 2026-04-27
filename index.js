@@ -7,6 +7,7 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
+const xlsx = require('xlsx');
 
 const app = express();
 app.set('trust proxy', true);
@@ -65,6 +66,9 @@ const conversationLogFilePath = path.isAbsolute(String(process.env.CONVERSATION_
 const callTranscriptLogFilePath = path.isAbsolute(String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim())
   ? String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim()
   : path.join(__dirname, String(process.env.CALL_TRANSCRIPT_LOG_FILE || 'data/call-transcripts.jsonl').trim());
+const callQualificationWorkbookFilePath = path.isAbsolute(String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim())
+  ? String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim()
+  : path.join(__dirname, String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || 'data/call-qualifications.xlsx').trim());
 
 const REQUIRED_ENV = [
   'ELEVENLABS_AGENT_ID',
@@ -74,7 +78,7 @@ const REQUIRED_ENV = [
 ];
 
 function getCompanyName() {
-  return String(process.env.COMPANY_NAME || 'Desireinfoweb').trim();
+  return String(process.env.COMPANY_NAME || 'Vishv Umiya Foundation').trim();
 }
 
 function getMaxCallSeconds() {
@@ -299,21 +303,307 @@ async function resolveWorkingPublicBaseUrl(req, options = {}) {
 function getAgentPlaybook() {
   const company = getCompanyName();
 
-  const firstMessage = `Hi, this is ${company}. We help businesses grow with automation and IT services.\nAre you looking for business automation or IT services today?`;
+  const firstMessage = `Namaste, this is ${company}. We are sharing the mission of Maa Umiya and Umiya Dham.\nWould you like to hear more and support this spiritual initiative?`;
 
   const systemPrompt = [
     `You are the ${company} voice assistant.`,
     '',
+    'Primary goal:',
+    'Introduce the foundation mission and respectfully capture if the caller is willing to join/support.',
+    '',
     'Conversation flow:',
-    `1) Start with a 2-line introduction about ${company}.`,
-    '2) Ask whether the user needs business automation or IT services.',
-    '3) Keep answers short, professional, and question-led.'
+    `1) Start with a short, respectful introduction about ${company}.`,
+    '2) Explain Umiya Dham and the mission: spirituality, education, healthcare, and community upliftment.',
+    '3) Ask one clear follow-up at a time and keep replies concise.',
+    '4) Before closing, ask: "Would you be open to joining/supporting this mission?"',
+    '5) If yes, confirm and offer next-step follow-up.',
+    '6) If no, thank the caller and close gracefully.',
+    '',
+    'Response discipline:',
+    '- Keep the conversation human and concise.',
+    '- Support natural Gujarati, Hindi, or English replies from callers.',
+    '- Never ramble or ask multiple questions in one turn.',
+    '- Make the final willingness-to-join answer unmistakable.'
   ].join('\n');
 
   return {
     firstMessage,
     systemPrompt
   };
+}
+
+function ensureCallQualificationWorkbookDirectory() {
+  fs.mkdirSync(path.dirname(callQualificationWorkbookFilePath), { recursive: true });
+}
+
+function getWorkbookAutosavePath() {
+  const dir = path.dirname(callQualificationWorkbookFilePath);
+  const ext = path.extname(callQualificationWorkbookFilePath) || '.xlsx';
+  const base = path.basename(callQualificationWorkbookFilePath, ext);
+  return path.join(dir, `${base}.autosave${ext}`);
+}
+
+function getSpeakerRoleGroup(role = '') {
+  const normalized = String(role || '').trim().toLowerCase();
+
+  if (['assistant', 'agent', 'ai', 'bot'].includes(normalized)) {
+    return 'agent';
+  }
+
+  if (['user', 'caller', 'customer', 'human', 'prospect'].includes(normalized)) {
+    return 'prospect';
+  }
+
+  if (!normalized || normalized === 'participant' || normalized === 'snippet') {
+    return 'unknown';
+  }
+
+  return normalized;
+}
+
+function buildTranscriptSearchText(messages = [], transcriptSnippet = '') {
+  const transcriptText = buildHumanReadableTranscript(messages, transcriptSnippet);
+  return normalizeFreeText(transcriptText);
+}
+
+function extractProspectMessageTexts(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  return messages
+    .map((item) => {
+      const roleGroup = getSpeakerRoleGroup(item?.role || '');
+      const text = normalizeTranscriptText(item?.text || '');
+      if (!text) {
+        return null;
+      }
+
+      if (roleGroup !== 'prospect') {
+        return null;
+      }
+
+      return text;
+    })
+    .filter(Boolean)
+    .slice();
+}
+
+function normalizeJoinDispositionLabel(value = '') {
+  if (value === true) {
+    return 'willing_to_join';
+  }
+
+  if (value === false) {
+    return 'not_willing_to_join';
+  }
+
+  const normalized = normalizeFreeText(value);
+  if (!normalized) {
+    return '';
+  }
+
+  if (['yes', 'willing to join', 'interested', 'join', 'positive'].includes(normalized)) {
+    return 'willing_to_join';
+  }
+
+  if (['no', 'not willing to join', 'not interested', 'negative'].includes(normalized)) {
+    return 'not_willing_to_join';
+  }
+
+  if (['follow_up', 'follow up later', 'maybe later'].includes(normalized)) {
+    return 'follow_up_later';
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
+function inferLeadDisposition(record = {}) {
+  if (record?.willingToJoin === true || record?.willing_to_join === true) {
+    return {
+      willingToJoin: true,
+      disposition: 'willing_to_join',
+      responseLabel: 'Willing to join',
+      evidence: String(record?.leadEvidence || record?.responseText || '').trim() || 'Captured from structured call data.'
+    };
+  }
+
+  if (record?.willingToJoin === false || record?.willing_to_join === false) {
+    return {
+      willingToJoin: false,
+      disposition: 'not_willing_to_join',
+      responseLabel: 'Not willing to join',
+      evidence: String(record?.leadEvidence || record?.responseText || '').trim() || 'Captured from structured call data.'
+    };
+  }
+
+  const explicitCandidates = [
+    record?.leadDisposition,
+    record?.lead_disposition,
+    record?.willingToJoin,
+    record?.willing_to_join,
+    record?.response,
+    record?.status
+  ];
+
+  for (const candidate of explicitCandidates) {
+    const normalized = normalizeJoinDispositionLabel(candidate);
+    if (!normalized) {
+      continue;
+    }
+
+    if (normalized === 'willing_to_join' || normalized === 'not_willing_to_join' || normalized === 'follow_up_later') {
+      return {
+        willingToJoin: normalized === 'willing_to_join',
+        disposition: normalized,
+        responseLabel: normalized === 'willing_to_join'
+          ? 'Willing to join'
+          : normalized === 'not_willing_to_join'
+            ? 'Not willing to join'
+            : 'Follow-up later',
+        evidence: String(record?.leadEvidence || record?.responseText || '').trim() || 'Captured from structured call data.'
+      };
+    }
+  }
+
+  const messages = Array.isArray(record?.messages) ? record.messages : [];
+  const prospectTexts = extractProspectMessageTexts(messages);
+  const candidateTexts = prospectTexts.length > 0
+    ? [...prospectTexts].reverse()
+    : [buildHumanReadableTranscript(messages, String(record?.transcriptSnippet || ''))];
+
+  const positivePatterns = [
+    /\b(yes|yeah|yep|sure|absolutely|definitely|interested|sounds good|count me in|sign me up|join|willing to join|let'?s do it|okay)\b/i,
+    /\b(send details|send more information|book a call|follow up|talk later)\b/i
+  ];
+  const negativePatterns = [
+    /\b(no|nope|not interested|not now|maybe later|busy|call me later|do not call|don't call|not a fit|not looking|pass|no thanks)\b/i
+  ];
+
+  for (const text of candidateTexts) {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) {
+      continue;
+    }
+
+    if (negativePatterns.some((pattern) => pattern.test(normalizedText))) {
+      return {
+        willingToJoin: false,
+        disposition: 'not_willing_to_join',
+        responseLabel: 'Not willing to join',
+        evidence: normalizedText.slice(0, 240)
+      };
+    }
+
+    if (positivePatterns.some((pattern) => pattern.test(normalizedText))) {
+      return {
+        willingToJoin: true,
+        disposition: 'willing_to_join',
+        responseLabel: 'Willing to join',
+        evidence: normalizedText.slice(0, 240)
+      };
+    }
+  }
+
+  const fallbackTranscript = candidateTexts[0] || '';
+  return {
+    willingToJoin: null,
+    disposition: 'unknown',
+    responseLabel: 'Unknown',
+    evidence: String(fallbackTranscript || '').trim().slice(0, 240)
+  };
+}
+
+function buildQualificationWorkbookRows(rows = []) {
+  const orderedRows = [...rows].sort((a, b) => String(b?.lastAt || '').localeCompare(String(a?.lastAt || '')));
+
+  return orderedRows.map((row, index) => {
+    const transcriptText = String(buildHumanReadableTranscript(row?.messages || [], row?.transcriptSnippet || '') || '').trim();
+    const disposition = inferLeadDisposition({ ...row, transcriptSnippet: row?.transcriptSnippet || transcriptText });
+    const localizedMessages = buildLocalizedTranscriptMessages(Array.isArray(row?.messages) ? row.messages : []);
+    const languageCounts = localizedMessages.reduce((acc, item) => {
+      const code = String(item?.language || 'unknown').trim().toLowerCase() || 'unknown';
+      acc[code] = Number(acc[code] || 0) + 1;
+      return acc;
+    }, {});
+    const languagesPresent = Object.keys(languageCounts);
+    const sortedLanguageCounts = Object.entries(languageCounts).sort((a, b) => b[1] - a[1]);
+    const topLanguageCode = sortedLanguageCounts.length > 0
+      ? sortedLanguageCounts[0][0]
+      : String(row?.conversationLanguage || row?.language || 'unknown').trim().toLowerCase();
+
+    return {
+      record_no: index + 1,
+      logged_at: String(row?.lastAt || row?.startedAt || row?.loggedAt || '').trim(),
+      phone_number: String(row?.callerPhone || '').trim(),
+      call_status: String(row?.callStatus || '').trim(),
+      to_number: String(row?.to || '').trim(),
+      from_number: String(row?.from || '').trim(),
+      update_count: Number(row?.updateCount || 0),
+      message_count: Array.isArray(row?.messages) ? row.messages.length : 0,
+      conversation_language: languageLabelFromCode(topLanguageCode),
+      conversation_language_code: topLanguageCode,
+      languages_present: languagesPresent.map((code) => languageLabelFromCode(code)).join(', '),
+      willing_to_join: disposition.willingToJoin === true
+        ? 'Yes'
+        : disposition.willingToJoin === false
+          ? 'No'
+          : 'Unknown',
+      response: disposition.responseLabel,
+      disposition: disposition.disposition,
+      evidence: String(disposition.evidence || '').trim().slice(0, 500),
+      call_sid: String(row?.callSid || '').trim(),
+      conversation_id: String(row?.conversationId || '').trim(),
+      transcript: transcriptText.slice(0, 30000)
+    };
+  });
+}
+
+function syncCallQualificationWorkbook() {
+  try {
+    ensureCallQualificationWorkbookDirectory();
+    const transcriptRows = readCallTranscriptSnapshots(20000);
+    const qualificationRows = buildQualificationWorkbookRows(buildConversationRowsFromSnapshots(transcriptRows, 5000));
+
+    const workbook = xlsx.utils.book_new();
+    const worksheet = xlsx.utils.json_to_sheet(qualificationRows);
+    xlsx.utils.book_append_sheet(workbook, worksheet, 'Leads');
+
+    try {
+      xlsx.writeFile(workbook, callQualificationWorkbookFilePath);
+    } catch (writeError) {
+      const code = String(writeError?.code || '').trim().toUpperCase();
+      if (code !== 'EBUSY' && code !== 'EPERM') {
+        throw writeError;
+      }
+
+      // When the primary workbook is open in Excel, write to autosave instead of dropping data.
+      const autosavePath = getWorkbookAutosavePath();
+      xlsx.writeFile(workbook, autosavePath);
+
+      return {
+        ok: true,
+        file: callQualificationWorkbookFilePath,
+        autosaveFile: autosavePath,
+        count: qualificationRows.length,
+        warning: `Primary workbook is locked (${code}). Wrote autosave workbook instead.`
+      };
+    }
+
+    return {
+      ok: true,
+      file: callQualificationWorkbookFilePath,
+      count: qualificationRows.length
+    };
+  } catch (error) {
+    console.error('[call-qualification-export] Failed to write workbook:', error?.message || error);
+    return {
+      ok: false,
+      file: callQualificationWorkbookFilePath,
+      count: 0,
+      error: error?.message || 'Unknown workbook export error'
+    };
+  }
 }
 
 function checkConfig() {
@@ -640,13 +930,10 @@ function finalizeConversationAggregateForCall({ callSid = '', callStatus = '', t
   }
 
   const finalizedAt = new Date().toISOString();
-  let messages = Array.isArray(aggregate.messages) ? aggregate.messages : [];
-  let transcriptSnippet = String(aggregate.transcriptSnippet || '').trim();
+  const messages = Array.isArray(aggregate.messages) ? aggregate.messages : [];
+  const transcriptSnippet = String(aggregate.transcriptSnippet || '').trim();
 
-  if (messages.length === 0 && !transcriptSnippet) {
-    transcriptSnippet = 'Transcript not available: no ElevenLabs transcript webhook was received for this call.';
-    messages = [{ role: 'system', text: transcriptSnippet }];
-  }
+  const leadDisposition = inferLeadDisposition({ messages, transcriptSnippet, callSid, conversationId: aggregate.conversationId, callerPhone: aggregate.callerPhone });
 
   appendCallTranscriptSnapshot({
     source: 'elevenlabs',
@@ -662,7 +949,11 @@ function finalizeConversationAggregateForCall({ callSid = '', callStatus = '', t
     lastAt: aggregate.lastAt,
     updateCount: aggregate.updateCount,
     messages,
-    transcriptSnippet
+    transcriptSnippet,
+    leadDisposition: leadDisposition.disposition,
+    willingToJoin: leadDisposition.willingToJoin,
+    response: leadDisposition.responseLabel,
+    leadEvidence: leadDisposition.evidence
   });
 
   appendConversationLog({
@@ -676,7 +967,10 @@ function finalizeConversationAggregateForCall({ callSid = '', callStatus = '', t
     from,
     messageCount: messages.length,
     transcriptSnippet: transcriptSnippet.slice(0, 1000),
-    updateCount: aggregate.updateCount
+    updateCount: aggregate.updateCount,
+    leadDisposition: leadDisposition.disposition,
+    willingToJoin: leadDisposition.willingToJoin,
+    response: leadDisposition.responseLabel
   });
 
   deleteConversationAggregate(aggregate);
@@ -690,10 +984,23 @@ function ensureCallTranscriptLogDirectory() {
   fs.mkdirSync(path.dirname(callTranscriptLogFilePath), { recursive: true });
 }
 
-const NO_TRANSCRIPT_PLACEHOLDER = 'Transcript not available: no ElevenLabs transcript webhook was received for this call.';
+function isUnavailableTranscriptText(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized.startsWith('transcript not available:');
+}
 
-function isPlaceholderTranscriptText(value = '') {
-  return String(value || '').trim() === NO_TRANSCRIPT_PLACEHOLDER;
+function hasRealTranscriptContent(record = {}) {
+  const messages = Array.isArray(record?.messages) ? record.messages : [];
+  const hasRealMessages = messages.some((item) => {
+    const role = String(item?.role || '').trim().toLowerCase();
+    const text = String(item?.text || '').trim();
+    return Boolean(text) && role !== 'system';
+  });
+
+  const transcriptSnippet = String(record?.transcriptSnippet || '').trim();
+  const hasSnippet = Boolean(transcriptSnippet) && !isUnavailableTranscriptText(transcriptSnippet);
+
+  return hasRealMessages || hasSnippet;
 }
 
 function getTranscriptQualityScore(record = {}) {
@@ -705,11 +1012,15 @@ function getTranscriptQualityScore(record = {}) {
     return Boolean(text) && role !== 'system';
   });
 
-  const hasRealSnippet = transcriptSnippet && !isPlaceholderTranscriptText(transcriptSnippet);
+  const hasRealSnippet = Boolean(transcriptSnippet) && !isUnavailableTranscriptText(transcriptSnippet);
+
+  if (!hasRealMessages && !hasRealSnippet) {
+    return 0;
+  }
 
   return (
     (hasRealMessages ? 1000 : 0)
-    + (messages.length * 10)
+    + (messages.filter((item) => String(item?.role || '').trim().toLowerCase() !== 'system').length * 10)
     + (hasRealSnippet ? 100 : 0)
     + transcriptSnippet.length
   );
@@ -729,7 +1040,6 @@ function mergeCallTranscriptRecord(existing = {}, incoming = {}) {
   if (incomingSnippet) {
     if (
       !mergedSnippet
-      || isPlaceholderTranscriptText(mergedSnippet)
       || incomingSnippet.length >= mergedSnippet.length
     ) {
       mergedSnippet = incomingSnippet;
@@ -746,11 +1056,6 @@ function mergeCallTranscriptRecord(existing = {}, incoming = {}) {
     transcriptSnippet: mergedSnippet,
     updateCount: Number(incoming?.updateCount || existing?.updateCount || 0)
   };
-
-  if ((!Array.isArray(merged.messages) || merged.messages.length === 0) && !String(merged.transcriptSnippet || '').trim()) {
-    merged.messages = [{ role: 'system', text: NO_TRANSCRIPT_PLACEHOLDER }];
-    merged.transcriptSnippet = NO_TRANSCRIPT_PLACEHOLDER;
-  }
 
   return merged;
 }
@@ -799,6 +1104,11 @@ function appendCallTranscriptSnapshot(record = {}) {
       loggedAt: new Date().toISOString(),
       ...record
     };
+
+    if (!hasRealTranscriptContent(safeRecord)) {
+      return;
+    }
+
     const existingRows = readCallTranscriptSnapshots(20000);
     const incomingCallSid = String(safeRecord?.callSid || '').trim();
     const incomingConversationId = String(safeRecord?.conversationId || '').trim();
@@ -820,6 +1130,7 @@ function appendCallTranscriptSnapshot(record = {}) {
 
     if (matchIndex < 0) {
       fs.appendFileSync(callTranscriptLogFilePath, `${JSON.stringify(safeRecord)}\n`, 'utf8');
+      syncCallQualificationWorkbook();
       return;
     }
 
@@ -832,6 +1143,7 @@ function appendCallTranscriptSnapshot(record = {}) {
 
     const output = `${existingRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
     fs.writeFileSync(callTranscriptLogFilePath, output, 'utf8');
+    syncCallQualificationWorkbook();
   } catch (error) {
     console.error('[call-transcript-log] Failed to append log:', error?.message || error);
   }
@@ -1398,6 +1710,10 @@ function buildConversationRowsFromSnapshots(rows = [], limit = 25) {
         callSid,
         conversationId,
         callerPhone,
+        callStatus: String(row?.callStatus || '').trim(),
+        to: normalizePhone(String(row?.to || '').trim()),
+        from: normalizePhone(String(row?.from || '').trim()),
+        conversationLanguage: String(row?.conversationLanguage || row?.language || '').trim().toLowerCase(),
         startedAt: String(row?.startedAt || row?.loggedAt || '').trim(),
         lastAt: String(row?.loggedAt || '').trim(),
         updateCount: 0,
@@ -1418,12 +1734,35 @@ function buildConversationRowsFromSnapshots(rows = [], limit = 25) {
       target.callerPhone = callerPhone;
     }
 
+    if (!target.callStatus && row?.callStatus) {
+      target.callStatus = String(row.callStatus || '').trim();
+    }
+
+    if (!target.to && row?.to) {
+      target.to = normalizePhone(String(row.to || '').trim());
+    }
+
+    if (!target.from && row?.from) {
+      target.from = normalizePhone(String(row.from || '').trim());
+    }
+
+    if (!target.conversationLanguage && (row?.conversationLanguage || row?.language)) {
+      target.conversationLanguage = String(row?.conversationLanguage || row?.language || '').trim().toLowerCase();
+    }
+
     if (!target.startedAt && row?.startedAt) {
       target.startedAt = String(row.startedAt).trim();
     }
 
     if (row?.loggedAt) {
       target.lastAt = String(row.loggedAt).trim();
+    }
+
+    if (row?.lastAt) {
+      const rowLastAt = String(row.lastAt).trim();
+      if (rowLastAt && rowLastAt > String(target.lastAt || '')) {
+        target.lastAt = rowLastAt;
+      }
     }
 
     target.updateCount += 1;
@@ -1454,6 +1793,13 @@ function buildConversationSnapshotsFromLogEntries(entries = []) {
     const callerPhone = normalizePhone(String(entry?.callerPhone || extractCallerPhone(payload, {})).trim());
     const messages = extractTranscriptMessages(payload);
     const transcriptSnippet = String(entry?.transcriptSnippet || extractTranscriptSnippet(payload) || '').trim();
+    const conversationLanguage = String(
+      entry?.conversationLanguage
+      || entry?.language
+      || payload?.data?.metadata?.main_language
+      || payload?.data?.main_language
+      || ''
+    ).trim().toLowerCase();
 
     if (!callSid && !conversationId) {
       continue;
@@ -1468,6 +1814,10 @@ function buildConversationSnapshotsFromLogEntries(entries = []) {
       callSid,
       conversationId,
       callerPhone,
+      callStatus: String(entry?.callStatus || '').trim(),
+      to: normalizePhone(String(entry?.to || '').trim()),
+      from: normalizePhone(String(entry?.from || '').trim()),
+      conversationLanguage,
       startedAt: String(entry?.startedAt || '').trim(),
       messages,
       transcriptSnippet,
@@ -1566,6 +1916,187 @@ function getLatestTwilioCallStatusEntry(callSid = '', entries = []) {
     const entryCallSid = String(entry?.callSid || '').trim();
     return source === 'twilio' && event === 'call-status' && entryCallSid === normalizedCallSid;
   }) || null;
+}
+
+function parseTimestampMs(value) {
+  if (value === null || value === undefined || value === '') {
+    return NaN;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return NaN;
+  }
+
+  if (/^\d{10,16}$/.test(raw)) {
+    const asNumber = Number(raw);
+    if (Number.isFinite(asNumber)) {
+      return asNumber;
+    }
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function getCallStatusTimelineBySid(callSid = '', entries = []) {
+  const normalizedCallSid = String(callSid || '').trim();
+  const list = Array.isArray(entries) ? entries : [];
+  if (!normalizedCallSid || list.length === 0) {
+    return {
+      firstAtMs: NaN,
+      lastAtMs: NaN,
+      completedAtMs: NaN,
+      to: '',
+      from: ''
+    };
+  }
+
+  const matches = list.filter((entry) => (
+    String(entry?.source || '').trim() === 'twilio'
+    && String(entry?.event || '').trim() === 'call-status'
+    && String(entry?.callSid || '').trim() === normalizedCallSid
+  ));
+
+  if (matches.length === 0) {
+    return {
+      firstAtMs: NaN,
+      lastAtMs: NaN,
+      completedAtMs: NaN,
+      to: '',
+      from: ''
+    };
+  }
+
+  let firstAtMs = NaN;
+  let lastAtMs = NaN;
+  let completedAtMs = NaN;
+  let to = '';
+  let from = '';
+
+  for (const item of matches) {
+    const whenMs = parseTimestampMs(item?.loggedAt);
+    if (Number.isFinite(whenMs)) {
+      if (!Number.isFinite(firstAtMs) || whenMs < firstAtMs) {
+        firstAtMs = whenMs;
+      }
+
+      if (!Number.isFinite(lastAtMs) || whenMs > lastAtMs) {
+        lastAtMs = whenMs;
+      }
+
+      if (String(item?.callStatus || '').trim().toLowerCase() === 'completed') {
+        completedAtMs = whenMs;
+      }
+    }
+
+    if (!to) {
+      to = normalizePhone(String(item?.to || item?.payload?.To || ''));
+    }
+
+    if (!from) {
+      from = normalizePhone(String(item?.from || item?.payload?.From || ''));
+    }
+  }
+
+  return {
+    firstAtMs,
+    lastAtMs,
+    completedAtMs,
+    to,
+    from
+  };
+}
+
+function isTimestampWithinWindow(targetMs, centerMs, beforeWindowMs, afterWindowMs) {
+  if (!Number.isFinite(targetMs) || !Number.isFinite(centerMs)) {
+    return false;
+  }
+
+  return targetMs >= (centerMs - beforeWindowMs) && targetMs <= (centerMs + afterWindowMs);
+}
+
+const VUF_TRANSCRIPT_KEYWORDS = [
+  'vishv umiya',
+  'umiya',
+  'umiya dham',
+  'maa umiya',
+  'foundation',
+  'spiritual'
+];
+
+function getTranscriptDomainRelevanceScore(candidateRow = {}) {
+  const normalized = normalizeFreeText(buildHumanReadableTranscript(
+    candidateRow?.messages || [],
+    candidateRow?.transcriptSnippet || ''
+  ));
+
+  if (!normalized) {
+    return 0;
+  }
+
+  let score = 0;
+  for (const keyword of VUF_TRANSCRIPT_KEYWORDS) {
+    if (normalized.includes(keyword)) {
+      score += 1;
+    }
+  }
+
+  return score;
+}
+
+function detectMessageLanguageCode(text = '') {
+  const value = String(text || '');
+  if (!value.trim()) {
+    return 'unknown';
+  }
+
+  if (/[\u0A80-\u0AFF]/.test(value)) {
+    return 'gu';
+  }
+
+  if (/[\u0900-\u097F]/.test(value)) {
+    return 'hi';
+  }
+
+  return 'en';
+}
+
+function languageLabelFromCode(code = '') {
+  const normalized = String(code || '').trim().toLowerCase();
+  if (normalized === 'gu') {
+    return 'Gujarati';
+  }
+
+  if (normalized === 'hi') {
+    return 'Hindi';
+  }
+
+  if (normalized === 'en') {
+    return 'English';
+  }
+
+  return 'Unknown';
+}
+
+function buildLocalizedTranscriptMessages(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  return list.map((item) => {
+    const role = String(item?.role || '').trim();
+    const text = normalizeTranscriptText(item?.text || '');
+    const language = detectMessageLanguageCode(text);
+    return {
+      role,
+      speaker: toHumanReadableSpeaker(role),
+      text,
+      language,
+      languageLabel: languageLabelFromCode(language)
+    };
+  }).filter((item) => Boolean(item.text));
 }
 
 function normalizeFreeText(value = '') {
@@ -1694,7 +2225,8 @@ app.get('/tester/config-status', async (req, res) => {
     companyName: getCompanyName(),
     conversationLogFile: conversationLogFilePath,
     conversationLogRetentionLimit: CONVERSATION_LOG_RETENTION_LIMIT,
-    callTranscriptLogFile: callTranscriptLogFilePath
+    callTranscriptLogFile: callTranscriptLogFilePath,
+    callQualificationWorkbookFile: callQualificationWorkbookFilePath
   });
 });
 
@@ -1751,6 +2283,29 @@ app.get('/tester/call-conversations', (req, res) => {
     count: rows.length,
     rows
   });
+});
+
+app.get('/tester/call-qualifications', (req, res) => {
+  const syncResult = syncCallQualificationWorkbook();
+  const transcriptRows = readCallTranscriptSnapshots(20000);
+  const rows = buildQualificationWorkbookRows(buildConversationRowsFromSnapshots(transcriptRows, 5000));
+
+  return res.status(syncResult.ok ? 200 : 500).json({
+    file: callQualificationWorkbookFilePath,
+    count: rows.length,
+    workbook: syncResult,
+    rows
+  });
+});
+
+app.get('/tester/call-qualifications.xlsx', (req, res) => {
+  const syncResult = syncCallQualificationWorkbook();
+
+  if (!syncResult.ok || !fs.existsSync(callQualificationWorkbookFilePath)) {
+    return res.status(500).json(syncResult);
+  }
+
+  return res.download(callQualificationWorkbookFilePath, path.basename(callQualificationWorkbookFilePath));
 });
 
 app.get('/tester/call-transcript', (req, res) => {
@@ -1811,6 +2366,11 @@ app.get('/tester/call-transcript', (req, res) => {
           return bMessageCount - aMessageCount;
         }
 
+        const relevanceDiff = getTranscriptDomainRelevanceScore(b) - getTranscriptDomainRelevanceScore(a);
+        if (relevanceDiff !== 0) {
+          return relevanceDiff;
+        }
+
         return String(b?.lastAt || '').localeCompare(String(a?.lastAt || ''));
       })[0] || null;
   };
@@ -1833,7 +2393,24 @@ app.get('/tester/call-transcript', (req, res) => {
     ].filter(Boolean);
 
     if (inferredPhones.length > 0) {
-      row = chooseBestTranscriptRow(collectRowsByPhones(inferredPhones));
+      const timeline = getCallStatusTimelineBySid(requestedCallSid, logEntries);
+      const candidates = collectRowsByPhones(inferredPhones)
+        .filter((candidate) => {
+          const candidateMs = parseTimestampMs(candidate?.lastAt || candidate?.startedAt || '');
+
+          // Accept only transcripts close to this call lifecycle to avoid stale same-phone matches.
+          if (Number.isFinite(timeline.completedAtMs)) {
+            return isTimestampWithinWindow(candidateMs, timeline.completedAtMs, 30 * 60 * 1000, 3 * 60 * 60 * 1000);
+          }
+
+          if (Number.isFinite(timeline.lastAtMs)) {
+            return isTimestampWithinWindow(candidateMs, timeline.lastAtMs, 45 * 60 * 1000, 3 * 60 * 60 * 1000);
+          }
+
+          return false;
+        });
+
+      row = chooseBestTranscriptRow(candidates);
     }
   }
 
@@ -1845,7 +2422,28 @@ app.get('/tester/call-transcript', (req, res) => {
     normalizePhone(String(inMemoryMeta?.to || '').trim()),
     normalizePhone(String(inMemoryMeta?.from || '').trim())
   ].filter(Boolean);
-  const transcriptByPhoneRow = chooseBestTranscriptRow(collectRowsByPhones(transcriptCandidatePhones));
+  const requestedTimeline = requestedCallSid
+    ? getCallStatusTimelineBySid(requestedCallSid, logEntries)
+    : null;
+  const transcriptByPhoneCandidates = collectRowsByPhones(transcriptCandidatePhones)
+    .filter((candidate) => {
+      if (!requestedCallSid || !requestedTimeline) {
+        return true;
+      }
+
+      const candidateMs = parseTimestampMs(candidate?.lastAt || candidate?.startedAt || '');
+
+      if (Number.isFinite(requestedTimeline.completedAtMs)) {
+        return isTimestampWithinWindow(candidateMs, requestedTimeline.completedAtMs, 30 * 60 * 1000, 3 * 60 * 60 * 1000);
+      }
+
+      if (Number.isFinite(requestedTimeline.lastAtMs)) {
+        return isTimestampWithinWindow(candidateMs, requestedTimeline.lastAtMs, 45 * 60 * 1000, 3 * 60 * 60 * 1000);
+      }
+
+      return false;
+    });
+  const transcriptByPhoneRow = chooseBestTranscriptRow(transcriptByPhoneCandidates);
 
   if ((!row || !hasRowTranscript(row)) && transcriptByPhoneRow) {
     row = {
@@ -1882,6 +2480,19 @@ app.get('/tester/call-transcript', (req, res) => {
     return asText;
   };
   const transcriptText = getRowTranscriptText(row);
+  const transcriptMessages = Array.isArray(row?.messages) ? row.messages : [];
+  const localizedMessages = buildLocalizedTranscriptMessages(transcriptMessages);
+  const languagesPresent = Array.from(new Set(localizedMessages.map((item) => item.language).filter(Boolean)));
+  const conversationLanguageCode = String(
+    row?.conversationLanguage
+    || row?.language
+    || (languagesPresent[0] || 'unknown')
+  ).trim().toLowerCase();
+  const leadDisposition = inferLeadDisposition({
+    ...(row || {}),
+    messages: transcriptMessages,
+    transcriptSnippet: String(row?.transcriptSnippet || '').trim()
+  });
 
   return res.status(200).json({
     callSid: requestedCallSid || String(row?.callSid || '').trim(),
@@ -1892,10 +2503,77 @@ app.get('/tester/call-transcript', (req, res) => {
     updateCount: Number(row?.updateCount || 0),
     conversationId: String(row?.conversationId || '').trim(),
     callerPhone: String(row?.callerPhone || requestedCallerPhone || '').trim(),
-    messageCount: Array.isArray(row?.messages) ? row.messages.length : 0,
+    messageCount: transcriptMessages.length,
+    conversationLanguage: conversationLanguageCode,
+    conversationLanguageLabel: languageLabelFromCode(conversationLanguageCode),
+    leadDisposition: leadDisposition.disposition,
+    willingToJoin: leadDisposition.willingToJoin,
+    response: leadDisposition.responseLabel,
+    evidence: leadDisposition.evidence,
     transcriptText,
-    transcriptMessages: Array.isArray(row?.messages) ? row.messages : [],
+    transcriptMessages,
+    transcriptMessagesLocalized: localizedMessages,
+    languagesPresent,
     hasTranscript: Boolean(transcriptText)
+  });
+});
+
+function buildBrowserDemoReplyText(userText = '', preferredLanguage = 'en') {
+  const normalized = normalizeFreeText(userText);
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+
+  if (/\b(no|not interested|stop|busy|later|no thanks)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return 'Dhanyavaad. Aapka samay dene ke liye shukriya. Maa Umiya aapko ashirwad de.';
+    }
+
+    if (lang === 'gu') {
+      return 'Aabhar. Tamara samay mate khub khub aabhar. Maa Umiya na aashirvad sathe.';
+    }
+
+    return 'Thank you for your time. Maa Umiya bless you. We can reconnect later if you wish.';
+  }
+
+  if (/\b(yes|interested|join|support|donate|how|details)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return 'Bahut accha. Vishv Umiya Foundation adhyatmikta, shiksha, swasthya aur samaj seva par kaam karta hai. Kya aap judne ke liye tayyar hain?';
+    }
+
+    if (lang === 'gu') {
+      return 'Saras. Vishv Umiya Foundation adhyatmikta, shikshan, aarogya ane samaj seva ma karya kare chhe. Shu tame aa mission ma jodava ichho cho?';
+    }
+
+    return 'Wonderful. Vishv Umiya Foundation serves through spirituality, education, healthcare, and community upliftment. Would you be open to joining this mission?';
+  }
+
+  if (lang === 'hi') {
+    return 'Namaste. Hum Vishv Umiya Foundation se hain. Hum Umiya Dham aur samaj sewa ke liye kaam karte hain. Kya aap is mission ke baare mein aur sunna chahenge?';
+  }
+
+  if (lang === 'gu') {
+    return 'Namaste. Ame Vishv Umiya Foundation mathi bolie chhiye. Ame Umiya Dham ane samaj seva na mission par kaam kariye chhiye. Shu tame vadhare sambhalva ichho cho?';
+  }
+
+  return 'Namaste. We are calling from Vishv Umiya Foundation. We are building Umiya Dham and serving communities through spiritual and social initiatives. Would you like to know more?';
+}
+
+app.post('/tester/browser-demo-reply', (req, res) => {
+  const userText = normalizeTranscriptText(String(req.body?.text || '').trim());
+  const language = String(req.body?.language || detectMessageLanguageCode(userText)).trim().toLowerCase();
+  const preferredLanguage = ['en', 'hi', 'gu'].includes(language) ? language : 'en';
+  const reply = buildBrowserDemoReplyText(userText, preferredLanguage);
+
+  appendConversationLog({
+    source: 'browser-demo',
+    event: 'demo-turn',
+    language: preferredLanguage,
+    userText,
+    reply
+  });
+
+  return res.status(200).json({
+    language: preferredLanguage,
+    reply
   });
 });
 
@@ -2178,6 +2856,14 @@ async function handleElevenLabsWebhook(req, res, receivedVia = '/elevenlabs/webh
   const webhookType = String(payload?.type || payload?.event || payload?.event_type || payload?.webhook_event || 'unknown').trim();
   const transcriptSnippet = extractTranscriptSnippet(payload);
   const transcriptMessages = extractTranscriptMessages(payload);
+  const conversationLanguage = String(
+    payload?.data?.metadata?.main_language
+    || payload?.data?.main_language
+    || payload?.language
+    || payload?.lang
+    || ''
+  ).trim().toLowerCase();
+  const leadDisposition = inferLeadDisposition({ messages: transcriptMessages, transcriptSnippet, payload, conversationId, callerPhone, callSid: extractedCallSid });
 
   let callSid = extractedCallSid
     || findActiveCallSidByConversationId(conversationId)
@@ -2216,6 +2902,10 @@ async function handleElevenLabsWebhook(req, res, receivedVia = '/elevenlabs/webh
     transcriptSnippet,
     transcriptMessageCount: transcriptMessages.length,
     aggregateMessageCount: aggregate?.messages?.length || 0,
+    conversationLanguage,
+    leadDisposition: leadDisposition.disposition,
+    willingToJoin: leadDisposition.willingToJoin,
+    response: leadDisposition.responseLabel,
     payload
   });
 
@@ -2229,9 +2919,14 @@ async function handleElevenLabsWebhook(req, res, receivedVia = '/elevenlabs/webh
       callSid,
       callerPhone,
       conversationId,
+      conversationLanguage,
       messages: aggregate?.messages || transcriptMessages,
       transcriptSnippet: aggregate?.transcriptSnippet || transcriptSnippet,
-      updateCount: aggregate?.updateCount || 0
+      updateCount: aggregate?.updateCount || 0,
+      leadDisposition: leadDisposition.disposition,
+      willingToJoin: leadDisposition.willingToJoin,
+      response: leadDisposition.responseLabel,
+      leadEvidence: leadDisposition.evidence
     });
   }
 
@@ -2280,6 +2975,10 @@ function startServer(initialPort) {
       const backfilledCount = backfillTranscriptSnapshotsFromConversationLog();
       if (backfilledCount > 0) {
         console.log(`[call-transcript-log] Backfilled ${backfilledCount} transcript snapshot(s) from conversation history.`);
+      }
+      const workbookSync = syncCallQualificationWorkbook();
+      if (workbookSync.ok) {
+        console.log(`[call-qualification-export] Workbook updated: ${workbookSync.file}`);
       }
       checkConfig();
       console.log(`Marketing Voice Agent running on port ${activePort}`);

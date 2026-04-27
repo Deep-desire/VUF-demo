@@ -1,9 +1,9 @@
-# Desireinfoweb Marketing Voice Agent (Twilio + ElevenLabs)
+# Vishv Umiya Foundation Voice Agent (Twilio + ElevenLabs)
 
-This project runs a marketing voice conversation flow:
+This project runs a VUF outreach voice conversation flow:
 
 - Start outbound calls from the local tester UI.
-- Introduce the company and qualify the prospect.
+- Introduce Vishv Umiya Foundation and capture willingness to join/support.
 - Capture call/webhook conversation history in logs.
 - Keep each call bounded by `MAX_CALL_SECONDS`.
 
@@ -42,6 +42,8 @@ Important keys:
 - `TWILIO_DIAL_TIMEOUT_SECONDS`
 - `PUBLIC_BASE_URL`
 - `CONVERSATION_LOG_FILE`
+- `CALL_TRANSCRIPT_LOG_FILE`
+- `CALL_QUALIFICATION_WORKBOOK_FILE`
 - `ELEVENLABS_WEBHOOK_REQUIRE_SIGNATURE`
 - `ELEVENLABS_WEBHOOK_SECRET`
 
@@ -73,6 +75,8 @@ Use `http://localhost:3000/tester`:
 - `GET /tester/conversation-log`
 - `GET /tester/public-url-health`
 - `GET /tester/call-conversations`
+- `GET /tester/call-qualifications`
+- `GET /tester/call-qualifications.xlsx`
 - `GET /tester/call-transcript`
 - `POST /tester/start-call`
 - `POST /elevenlabs/webhook`

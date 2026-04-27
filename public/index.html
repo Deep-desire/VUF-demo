@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Marketing Voice Agent Tester</title>
+    <title>VUF Voice Call Console</title>
     <style>
       :root {
         --bg-0: #f4f1ea;
@@ -206,6 +206,35 @@
         font-size: 0.85rem;
       }
 
+      .toolbar-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
+      }
+
+      .toolbar-row select {
+        max-width: 190px;
+        padding: 8px;
+      }
+
+      .lang-chip {
+        display: inline-block;
+        font-size: 0.73rem;
+        line-height: 1;
+        margin-right: 6px;
+        padding: 3px 6px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #f6efe1;
+        color: #514a3c;
+      }
+
+      .demo-transcript {
+        min-height: 190px;
+      }
+
       @media (max-width: 700px) {
         .wrap {
           margin: 20px auto;
@@ -216,8 +245,8 @@
   <body>
     <main class="wrap">
       <section class="hero">
-        <h1>Marketing Voice Agent Test Console</h1>
-        <p>Test outbound calling flow without using Twilio Console pages.</p>
+        <h1>VUF Voice Call Test Console</h1>
+        <p>Run Vishv Umiya Foundation call flows and transcript validation in one place.</p>
         <div class="status-row">
           <span class="pill" id="status-health">Health: Checking...</span>
           <span class="pill" id="status-company">Company: Checking...</span>
@@ -234,7 +263,7 @@
 
       <section class="grid">
         <article class="card">
-          <h2>1) Start Marketing Call To Prospect</h2>
+          <h2>1) Start VUF Call To Prospect</h2>
           <div class="field">
             <label for="realTo">Call This Number</label>
             <input id="realTo" value="+27700000001" />
@@ -253,7 +282,33 @@
         <article class="card">
           <h2>3) Current Call Full Transcript</h2>
           <p class="panel-subtitle">Latest 5 calls (newest first) with full human-readable transcripts.</p>
+          <div class="toolbar-row">
+            <label for="transcriptLanguage" style="font-size:0.85rem;color:var(--muted);">Language</label>
+            <select id="transcriptLanguage">
+              <option value="all">All</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="gu">Gujarati</option>
+            </select>
+          </div>
           <div id="activeTranscriptOut" class="conversation-list">Loading recent transcripts...</div>
+        </article>
+
+        <article class="card">
+          <h2>4) Browser Voice Call Demo (No Twilio)</h2>
+          <p class="panel-subtitle">Demo voice flow in browser using mic + speech synthesis.</p>
+          <div class="toolbar-row">
+            <label for="browserDemoLanguage" style="font-size:0.85rem;color:var(--muted);">Language</label>
+            <select id="browserDemoLanguage">
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="gu">Gujarati</option>
+            </select>
+          </div>
+          <button id="startBrowserDemo" class="secondary">Start Browser Voice Demo</button>
+          <button id="stopBrowserDemo">Stop Browser Voice Demo</button>
+          <div class="hint">Tip: Chrome is recommended. Allow microphone permission when prompted.</div>
+          <pre id="browserDemoOut" class="conversation-transcript demo-transcript">Press start to begin browser voice demo.</pre>
         </article>
 
       </section>
@@ -275,6 +330,16 @@
         (isFileMode ? storedApiBase : '')
       ).replace(/\/+$/, '');
       const RECENT_TRANSCRIPT_LIMIT = 5;
+      let browserDemoRecognizer = null;
+      let browserDemoRunning = false;
+      let browserDemoTurns = [];
+
+      const LANG_LABELS = {
+        all: 'All',
+        en: 'English',
+        hi: 'Hindi',
+        gu: 'Gujarati'
+      };
 
       if (isFileMode && queryApiBase) {
         localStorage.setItem('testerApiBase', queryApiBase);
@@ -699,7 +764,37 @@
         return rows;
       }
 
+      function detectMessageLanguageCode(text) {
+        const value = String(text || '');
+        if (!value.trim()) {
+          return 'unknown';
+        }
+
+        if (/[\u0A80-\u0AFF]/.test(value)) {
+          return 'gu';
+        }
+
+        if (/[\u0900-\u097F]/.test(value)) {
+          return 'hi';
+        }
+
+        return 'en';
+      }
+
+      function languageLabel(code) {
+        return LANG_LABELS[String(code || '').toLowerCase()] || 'Unknown';
+      }
+
       async function resolveCallTranscriptRow(row) {
+        const rowMessages = Array.isArray(row?.messages) ? row.messages : [];
+        const rowTranscriptText = rowMessages.length > 0
+          ? rowMessages.map((item) => {
+            const speaker = String(item?.speaker || item?.role || 'Participant').trim();
+            const text = String(item?.text || '').trim();
+            return text ? `${speaker}: ${text}` : '';
+          }).filter(Boolean).join('\n\n')
+          : String(row?.transcriptSnippet || '').trim();
+
         const baseRow = {
           ...row,
           callSid: String(row?.callSid || '').trim(),
@@ -709,7 +804,8 @@
           startedAt: row?.startedAt || '',
           lastAt: row?.lastAt || '',
           messageCount: Number(Array.isArray(row?.messages) ? row.messages.length : 0),
-          transcriptText: ''
+          transcriptText: rowTranscriptText,
+          transcriptSnippet: String(row?.transcriptSnippet || '').trim()
         };
 
         const query = buildCallTranscriptQuery(baseRow);
@@ -734,15 +830,58 @@
             startedAt: parsed?.startedAt || baseRow.startedAt,
             lastAt: parsed?.lastAt || baseRow.lastAt,
             messageCount: Number(parsed?.messageCount || baseRow.messageCount || 0),
-            transcriptText: String(parsed?.transcriptText || '').trim()
+            transcriptText: String(parsed?.transcriptText || '').trim(),
+            conversationLanguage: String(parsed?.conversationLanguage || '').trim().toLowerCase(),
+            conversationLanguageLabel: String(parsed?.conversationLanguageLabel || '').trim(),
+            transcriptMessages: Array.isArray(parsed?.transcriptMessagesLocalized)
+              ? parsed.transcriptMessagesLocalized
+              : Array.isArray(parsed?.transcriptMessages)
+                ? parsed.transcriptMessages.map((item) => ({
+                  speaker: String(item?.role || 'participant'),
+                  text: String(item?.text || '').trim(),
+                  language: detectMessageLanguageCode(item?.text || '')
+                })).filter((item) => item.text)
+                : [],
+            languagesPresent: Array.isArray(parsed?.languagesPresent)
+              ? parsed.languagesPresent
+              : []
           };
         } catch {
           return baseRow;
         }
       }
 
+      function formatTranscriptForLanguage(row, selectedLanguage = 'all') {
+        const language = String(selectedLanguage || 'all').toLowerCase();
+        const messages = Array.isArray(row?.transcriptMessages) ? row.transcriptMessages : [];
+
+        if (messages.length > 0) {
+          const filtered = language === 'all'
+            ? messages
+            : messages.filter((item) => String(item?.language || '').toLowerCase() === language);
+
+          if (filtered.length > 0) {
+            return filtered.map((item) => {
+              const speaker = String(item?.speaker || 'Participant').trim();
+              const text = String(item?.text || '').trim();
+              const langCode = String(item?.language || '').trim().toLowerCase();
+              const langName = languageLabel(langCode);
+              return `[${langName}] ${speaker}: ${text}`;
+            }).join('\n\n');
+          }
+        }
+
+        if (language !== 'all') {
+          return `No ${languageLabel(language)} messages in this call transcript.`;
+        }
+
+        return String(row?.transcriptText || '').trim();
+      }
+
       function renderRecentTranscriptPanel(rows) {
         const panel = document.getElementById('activeTranscriptOut');
+        const languageSelect = document.getElementById('transcriptLanguage');
+        const selectedLanguage = String(languageSelect?.value || 'all').toLowerCase();
         if (!panel) {
           return;
         }
@@ -754,8 +893,13 @@
         }
 
         panel.innerHTML = list.map((row, index) => {
-          const transcript = escapeHtml(String(row?.transcriptText || '').trim())
+          const transcript = escapeHtml(formatTranscriptForLanguage(row, selectedLanguage))
             || 'Transcript not available yet. Waiting for ElevenLabs post-call transcript payload.';
+          const languageBadges = (Array.isArray(row?.languagesPresent) ? row.languagesPresent : [])
+            .map((code) => `<span class="lang-chip">${escapeHtml(languageLabel(code))}</span>`)
+            .join('');
+          const detectedLanguage = String(row?.conversationLanguageLabel || '').trim()
+            || languageLabel(String(row?.conversationLanguage || '').trim().toLowerCase());
 
           return `
             <div class="conversation-item">
@@ -764,12 +908,160 @@
                 <strong>Status:</strong> ${escapeHtml(String(row?.callStatus || 'unknown'))} | <strong>Caller:</strong> ${escapeHtml(String(row?.callerPhone || '-'))}<br/>
                 <strong>Conversation ID:</strong> ${escapeHtml(String(row?.conversationId || '-'))}<br/>
                 <strong>Started:</strong> ${escapeHtml(toIsoText(row?.startedAt || ''))} | <strong>Last Update:</strong> ${escapeHtml(toIsoText(row?.lastAt || ''))}<br/>
-                <strong>Messages:</strong> ${Number(row?.messageCount || 0)}
+                <strong>Messages:</strong> ${Number(row?.messageCount || 0)}<br/>
+                <strong>Detected Language:</strong> ${escapeHtml(detectedLanguage)}<br/>
+                <strong>Languages:</strong> ${languageBadges || '<span class="lang-chip">Unknown</span>'}
               </div>
               <pre class="conversation-transcript">${transcript}</pre>
             </div>
           `;
         }).join('');
+      }
+
+      function appendBrowserDemoLine(line) {
+        const output = document.getElementById('browserDemoOut');
+        if (!output) {
+          return;
+        }
+
+        const current = String(output.textContent || '').trim();
+        output.textContent = current
+          ? `${current}\n\n${line}`
+          : line;
+        output.scrollTop = output.scrollHeight;
+      }
+
+      function speakBrowserDemo(text, languageCode) {
+        const value = String(text || '').trim();
+        if (!value) {
+          return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(value);
+        if (languageCode === 'hi') {
+          utterance.lang = 'hi-IN';
+        } else if (languageCode === 'gu') {
+          utterance.lang = 'gu-IN';
+        } else {
+          utterance.lang = 'en-IN';
+        }
+
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      }
+
+      async function callBrowserDemoReply(userText, languageCode) {
+        const { response } = await requestApi('/tester/browser-demo-reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: userText, language: languageCode })
+        }, 12000);
+
+        const text = await getTextResponse(response);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+
+        return JSON.parse(text);
+      }
+
+      function stopBrowserDemoSession() {
+        browserDemoRunning = false;
+        if (browserDemoRecognizer) {
+          try {
+            browserDemoRecognizer.onresult = null;
+            browserDemoRecognizer.onerror = null;
+            browserDemoRecognizer.onend = null;
+            browserDemoRecognizer.stop();
+          } catch {
+            // Ignore stop errors.
+          }
+          browserDemoRecognizer = null;
+        }
+        window.speechSynthesis.cancel();
+      }
+
+      async function startBrowserDemoSession() {
+        const output = document.getElementById('browserDemoOut');
+        const languageSelect = document.getElementById('browserDemoLanguage');
+        const selectedLanguage = String(languageSelect?.value || 'en').toLowerCase();
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+          output.textContent = 'SpeechRecognition is not supported in this browser. Use Chrome for browser voice demo.';
+          return;
+        }
+
+        stopBrowserDemoSession();
+        browserDemoRunning = true;
+        browserDemoTurns = [];
+        output.textContent = 'Browser voice demo started. Listening...';
+
+        const intro = selectedLanguage === 'hi'
+          ? 'Namaste. Yeh Vishv Umiya Foundation browser demo hai. Kripya boliye.'
+          : selectedLanguage === 'gu'
+            ? 'Namaste. Aa Vishv Umiya Foundation no browser demo chhe. Krupaya bolo.'
+            : 'Namaste. This is the Vishv Umiya Foundation browser demo. Please speak.';
+
+        appendBrowserDemoLine(`Agent: ${intro}`);
+        speakBrowserDemo(intro, selectedLanguage);
+
+        const recognizer = new SpeechRecognition();
+        browserDemoRecognizer = recognizer;
+        recognizer.continuous = true;
+        recognizer.interimResults = false;
+        recognizer.lang = selectedLanguage === 'hi'
+          ? 'hi-IN'
+          : selectedLanguage === 'gu'
+            ? 'gu-IN'
+            : 'en-IN';
+
+        recognizer.onresult = async (event) => {
+          if (!browserDemoRunning) {
+            return;
+          }
+
+          const result = event.results[event.results.length - 1];
+          if (!result || !result[0]) {
+            return;
+          }
+
+          const userText = String(result[0].transcript || '').trim();
+          if (!userText) {
+            return;
+          }
+
+          browserDemoTurns.push({ role: 'user', text: userText, language: selectedLanguage });
+          appendBrowserDemoLine(`Prospect: ${userText}`);
+
+          try {
+            const replyResult = await callBrowserDemoReply(userText, selectedLanguage);
+            const replyText = String(replyResult?.reply || '').trim();
+            const replyLang = String(replyResult?.language || selectedLanguage).trim().toLowerCase();
+            browserDemoTurns.push({ role: 'assistant', text: replyText, language: replyLang });
+            appendBrowserDemoLine(`Agent: ${replyText}`);
+            speakBrowserDemo(replyText, replyLang);
+          } catch (error) {
+            appendBrowserDemoLine(`Error: ${error?.message || 'Failed to get demo reply.'}`);
+          }
+        };
+
+        recognizer.onerror = (event) => {
+          appendBrowserDemoLine(`Recognizer error: ${event?.error || 'unknown'}`);
+        };
+
+        recognizer.onend = () => {
+          if (browserDemoRunning) {
+            try {
+              recognizer.start();
+            } catch {
+              appendBrowserDemoLine('Recognizer stopped unexpectedly. Press start again.');
+              browserDemoRunning = false;
+            }
+          }
+        };
+
+        recognizer.start();
       }
 
       async function refreshRecentTranscriptPanel() {
@@ -779,14 +1071,16 @@
         }
 
         try {
-          const { response } = await requestApi('/tester/all-logs?limit=400', { method: 'GET' }, 10000);
+          const { response } = await requestApi(`/tester/call-conversations?limit=${RECENT_TRANSCRIPT_LIMIT}`, { method: 'GET' }, 10000);
           const text = await getTextResponse(response);
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${text}`);
           }
 
           const parsed = JSON.parse(text);
-          const rows = extractLatestCallRowsFromLogs(parsed?.entries || [], RECENT_TRANSCRIPT_LIMIT);
+          const rows = Array.isArray(parsed?.rows)
+            ? parsed.rows.slice(0, RECENT_TRANSCRIPT_LIMIT)
+            : [];
           const resolvedRows = await Promise.all(rows.map((row) => resolveCallTranscriptRow(row)));
           renderRecentTranscriptPanel(resolvedRows);
         } catch (error) {
@@ -849,7 +1143,7 @@
         try {
           const { response } = await requestApi('/tester/config-status', { method: 'GET' }, 6000);
           const cfg = await response.json();
-          companyEl.textContent = 'Company: ' + (cfg.companyName || 'Desireinfoweb');
+          companyEl.textContent = 'Company: ' + (cfg.companyName || 'Vishv Umiya Foundation');
           twilioEl.textContent = 'Twilio: ' + (cfg.hasTwilioClient ? 'configured' : 'missing env');
           agentEl.textContent = 'Agent: ElevenLabs webhook mode';
 
@@ -992,6 +1286,19 @@
             'Tip: open /tester from the same backend origin, or set ?apiBase=http://localhost:<port>' +
             localTesterTip;
         }
+      });
+
+      document.getElementById('transcriptLanguage').addEventListener('change', () => {
+        refreshRecentTranscriptPanel();
+      });
+
+      document.getElementById('startBrowserDemo').addEventListener('click', async () => {
+        await startBrowserDemoSession();
+      });
+
+      document.getElementById('stopBrowserDemo').addEventListener('click', () => {
+        stopBrowserDemoSession();
+        appendBrowserDemoLine('Browser demo stopped.');
       });
 
       async function initTester() {
