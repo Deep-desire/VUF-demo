@@ -2304,4 +2304,8 @@ function startServer(initialPort) {
   tryListen();
 }
 
-startServer(requestedPort);
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  startServer(requestedPort);
+}
