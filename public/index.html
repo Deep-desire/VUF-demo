@@ -235,6 +235,19 @@
         min-height: 190px;
       }
 
+      .demo-status {
+        margin-top: 8px;
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
       @media (max-width: 700px) {
         .wrap {
           margin: 20px auto;
@@ -296,18 +309,19 @@
 
         <article class="card">
           <h2>3) Browser Voice Call Demo (No Twilio)</h2>
-          <p class="panel-subtitle">Demo voice flow in browser using mic + speech synthesis.</p>
-          <div class="toolbar-row">
+          <p class="panel-subtitle">Demo voice flow in browser using mic + speech synthesis. This is a local browser demo, not the ElevenLabs Twilio call flow.</p>
+          <!-- <div class="toolbar-row">
             <label for="browserDemoLanguage" style="font-size:0.85rem;color:var(--muted);">Language</label>
             <select id="browserDemoLanguage">
               <option value="en">English</option>
               <option value="hi">Hindi</option>
               <option value="gu">Gujarati</option>
             </select>
-          </div>
+          </div> -->
           <button id="startBrowserDemo" class="secondary">Start Browser Voice Demo</button>
           <button id="stopBrowserDemo">Stop Browser Voice Demo</button>
-          <div class="hint">Tip: Chrome is recommended. Allow microphone permission when prompted.</div>
+          <div id="browserDemoStatus" class="demo-status" aria-live="polite">Idle.</div>
+          <div class="hint">Tip: Chrome is recommended. Allow microphone permission when prompted. The assistant will pause listening while it speaks to reduce echo and duplicate turns.</div>
           <pre id="browserDemoOut" class="conversation-transcript demo-transcript">Press start to begin browser voice demo.</pre>
         </article>
 
@@ -332,7 +346,14 @@
       const RECENT_TRANSCRIPT_LIMIT = 5;
       let browserDemoRecognizer = null;
       let browserDemoRunning = false;
+      let browserDemoListeningPaused = false;
+      let browserDemoBusy = false;
       let browserDemoTurns = [];
+      let browserDemoVoiceList = [];
+      let browserDemoAudio = null;
+      let browserDemoAudioUrl = '';
+      let browserDemoConversation = null;
+      let browserDemoConversationFactory = null;
 
       const LANG_LABELS = {
         all: 'All',
@@ -931,137 +952,159 @@
         output.scrollTop = output.scrollHeight;
       }
 
-      function speakBrowserDemo(text, languageCode) {
-        const value = String(text || '').trim();
-        if (!value) {
-          return;
+      function setBrowserDemoStatus(text) {
+        const status = document.getElementById('browserDemoStatus');
+        if (status) {
+          status.textContent = text;
         }
-
-        const utterance = new SpeechSynthesisUtterance(value);
-        if (languageCode === 'hi') {
-          utterance.lang = 'hi-IN';
-        } else if (languageCode === 'gu') {
-          utterance.lang = 'gu-IN';
-        } else {
-          utterance.lang = 'en-IN';
-        }
-
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
       }
 
-      async function callBrowserDemoReply(userText, languageCode) {
-        const { response } = await requestApi('/tester/browser-demo-reply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: userText, language: languageCode })
-        }, 12000);
+      function setBrowserDemoButtons() {
+        const startBtn = document.getElementById('startBrowserDemo');
+        const stopBtn = document.getElementById('stopBrowserDemo');
+        if (startBtn) {
+          startBtn.disabled = browserDemoRunning;
+        }
+        if (stopBtn) {
+          stopBtn.disabled = !browserDemoRunning;
+        }
+      }
 
+      function cleanupBrowserDemoAudio() {
+        if (browserDemoAudio) {
+          try {
+            browserDemoAudio.pause();
+          } catch {
+            // Ignore audio pause failures.
+          }
+          browserDemoAudio = null;
+        }
+
+        if (browserDemoAudioUrl) {
+          URL.revokeObjectURL(browserDemoAudioUrl);
+          browserDemoAudioUrl = '';
+        }
+      }
+
+      async function getBrowserDemoConversationFactory() {
+        if (browserDemoConversationFactory) {
+          return browserDemoConversationFactory;
+        }
+
+        const module = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client/+esm');
+        if (!module?.Conversation?.startSession) {
+          throw new Error('ElevenLabs browser conversation SDK could not be loaded.');
+        }
+
+        browserDemoConversationFactory = module.Conversation;
+        return browserDemoConversationFactory;
+      }
+
+      async function getBrowserDemoSignedUrl() {
+        const { response } = await requestApi('/tester/browser-demo-signed-url', { method: 'GET' }, 15000);
         const text = await getTextResponse(response);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${text}`);
         }
 
-        return JSON.parse(text);
+        const parsed = JSON.parse(text);
+        const signedUrl = String(parsed?.signedUrl || '').trim();
+        if (!signedUrl) {
+          throw new Error('Signed URL missing from browser demo session response.');
+        }
+
+        return parsed;
       }
 
-      function stopBrowserDemoSession() {
+      async function stopBrowserDemoSession() {
         browserDemoRunning = false;
-        if (browserDemoRecognizer) {
+        browserDemoListeningPaused = false;
+        browserDemoBusy = false;
+        if (browserDemoConversation && typeof browserDemoConversation.endSession === 'function') {
           try {
-            browserDemoRecognizer.onresult = null;
-            browserDemoRecognizer.onerror = null;
-            browserDemoRecognizer.onend = null;
-            browserDemoRecognizer.stop();
+            await browserDemoConversation.endSession();
           } catch {
-            // Ignore stop errors.
+            // Ignore end-session errors.
           }
-          browserDemoRecognizer = null;
         }
+        browserDemoConversation = null;
+        browserDemoRecognizer = null;
+        cleanupBrowserDemoAudio();
         window.speechSynthesis.cancel();
+        setBrowserDemoStatus('Idle.');
+        setBrowserDemoButtons();
       }
 
       async function startBrowserDemoSession() {
         const output = document.getElementById('browserDemoOut');
         const languageSelect = document.getElementById('browserDemoLanguage');
         const selectedLanguage = String(languageSelect?.value || 'en').toLowerCase();
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-          output.textContent = 'SpeechRecognition is not supported in this browser. Use Chrome for browser voice demo.';
-          return;
-        }
-
-        stopBrowserDemoSession();
+        await stopBrowserDemoSession();
         browserDemoRunning = true;
+        browserDemoListeningPaused = false;
+        browserDemoBusy = false;
         browserDemoTurns = [];
-        output.textContent = 'Browser voice demo started. Listening...';
+        output.textContent = 'Browser voice demo started. Connecting to ElevenLabs agent...';
+        setBrowserDemoButtons();
+        setBrowserDemoStatus('Connecting to ElevenLabs agent...');
 
-        const intro = selectedLanguage === 'hi'
-          ? 'Namaste. Yeh Vishv Umiya Foundation browser demo hai. Kripya boliye.'
-          : selectedLanguage === 'gu'
-            ? 'Namaste. Aa Vishv Umiya Foundation no browser demo chhe. Krupaya bolo.'
-            : 'Namaste. This is the Vishv Umiya Foundation browser demo. Please speak.';
+        try {
+          const [{ signedUrl, conversationId }, Conversation] = await Promise.all([
+            getBrowserDemoSignedUrl(),
+            getBrowserDemoConversationFactory()
+          ]);
 
-        appendBrowserDemoLine(`Agent: ${intro}`);
-        speakBrowserDemo(intro, selectedLanguage);
+          appendBrowserDemoLine(`System: Connected browser demo to ElevenLabs agent${conversationId ? ` (${conversationId})` : ''}.`);
 
-        const recognizer = new SpeechRecognition();
-        browserDemoRecognizer = recognizer;
-        recognizer.continuous = true;
-        recognizer.interimResults = false;
-        recognizer.lang = selectedLanguage === 'hi'
-          ? 'hi-IN'
-          : selectedLanguage === 'gu'
-            ? 'gu-IN'
-            : 'en-IN';
+          browserDemoConversation = await Conversation.startSession({
+            signedUrl,
+            connectionType: 'websocket',
+            onConnect: (metadata) => {
+              const activeConversationId = String(metadata?.conversationId || conversationId || '').trim();
+              setBrowserDemoStatus(activeConversationId
+                ? `Connected to ElevenLabs agent. Conversation: ${activeConversationId}`
+                : 'Connected to ElevenLabs agent. Speak naturally.');
+            },
+            onDisconnect: () => {
+              browserDemoConversation = null;
+              if (browserDemoRunning) {
+                browserDemoRunning = false;
+                setBrowserDemoButtons();
+                setBrowserDemoStatus('Disconnected from ElevenLabs agent.');
+                appendBrowserDemoLine('System: Browser demo conversation ended.');
+              }
+            },
+            onError: (error) => {
+              const message = error?.message || String(error || 'Unknown ElevenLabs browser demo error');
+              appendBrowserDemoLine(`Error: ${message}`);
+              setBrowserDemoStatus(`Error: ${message}`);
+            },
+            onMessage: (message) => {
+              const source = String(message?.source || '').trim().toLowerCase();
+              const text = String(message?.message || message?.text || '').trim();
+              if (!text) {
+                return;
+              }
 
-        recognizer.onresult = async (event) => {
-          if (!browserDemoRunning) {
-            return;
-          }
+              if (source === 'user' || source === 'human') {
+                browserDemoTurns.push({ role: 'user', text, language: selectedLanguage });
+                appendBrowserDemoLine(`Prospect: ${text}`);
+                setBrowserDemoStatus('Listening to your conversation...');
+                return;
+              }
 
-          const result = event.results[event.results.length - 1];
-          if (!result || !result[0]) {
-            return;
-          }
-
-          const userText = String(result[0].transcript || '').trim();
-          if (!userText) {
-            return;
-          }
-
-          browserDemoTurns.push({ role: 'user', text: userText, language: selectedLanguage });
-          appendBrowserDemoLine(`Prospect: ${userText}`);
-
-          try {
-            const replyResult = await callBrowserDemoReply(userText, selectedLanguage);
-            const replyText = String(replyResult?.reply || '').trim();
-            const replyLang = String(replyResult?.language || selectedLanguage).trim().toLowerCase();
-            browserDemoTurns.push({ role: 'assistant', text: replyText, language: replyLang });
-            appendBrowserDemoLine(`Agent: ${replyText}`);
-            speakBrowserDemo(replyText, replyLang);
-          } catch (error) {
-            appendBrowserDemoLine(`Error: ${error?.message || 'Failed to get demo reply.'}`);
-          }
-        };
-
-        recognizer.onerror = (event) => {
-          appendBrowserDemoLine(`Recognizer error: ${event?.error || 'unknown'}`);
-        };
-
-        recognizer.onend = () => {
-          if (browserDemoRunning) {
-            try {
-              recognizer.start();
-            } catch {
-              appendBrowserDemoLine('Recognizer stopped unexpectedly. Press start again.');
-              browserDemoRunning = false;
+              browserDemoTurns.push({ role: 'assistant', text, language: selectedLanguage });
+              appendBrowserDemoLine(`Agent: ${text}`);
+              setBrowserDemoStatus('Agent is responding...');
             }
-          }
-        };
-
-        recognizer.start();
+          });
+        } catch (error) {
+          browserDemoRunning = false;
+          browserDemoConversation = null;
+          setBrowserDemoButtons();
+          setBrowserDemoStatus(`Unable to start ElevenLabs browser demo: ${error?.message || 'Unknown error'}`);
+          appendBrowserDemoLine(`Error: ${error?.message || 'Unable to start ElevenLabs browser demo.'}`);
+        }
       }
 
       async function refreshRecentTranscriptPanel() {
@@ -1296,8 +1339,8 @@
         await startBrowserDemoSession();
       });
 
-      document.getElementById('stopBrowserDemo').addEventListener('click', () => {
-        stopBrowserDemoSession();
+      document.getElementById('stopBrowserDemo').addEventListener('click', async () => {
+        await stopBrowserDemoSession();
         appendBrowserDemoLine('Browser demo stopped.');
       });
 

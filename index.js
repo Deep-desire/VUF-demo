@@ -2245,6 +2245,77 @@ function normalizeFreeText(value = '') {
     .trim();
 }
 
+function getElevenLabsBrowserDemoVoiceId(languageCode = 'en') {
+  const normalized = String(languageCode || 'en').trim().toLowerCase();
+  const languageSpecific =
+    normalized === 'hi'
+      ? String(process.env.ELEVENLABS_VOICE_ID_HI || '').trim()
+      : normalized === 'gu'
+        ? String(process.env.ELEVENLABS_VOICE_ID_GU || '').trim()
+        : String(process.env.ELEVENLABS_VOICE_ID_EN || '').trim();
+
+  return (
+    languageSpecific ||
+    String(process.env.ELEVENLABS_VOICE_ID || '').trim() ||
+    '21m00Tcm4TlvDq8ikWAM'
+  );
+}
+
+async function synthesizeBrowserDemoSpeechWithElevenLabs(text = '', languageCode = 'en') {
+  const normalizedText = normalizeTranscriptText(text);
+  const apiKey = String(process.env.ELEVENLABS_API_KEY || '').trim();
+  const voiceId = getElevenLabsBrowserDemoVoiceId(languageCode);
+  const modelId = String(process.env.ELEVENLABS_BROWSER_DEMO_MODEL_ID || 'eleven_multilingual_v2').trim() || 'eleven_multilingual_v2';
+  const stability = Number(process.env.ELEVENLABS_BROWSER_DEMO_STABILITY || 0.36);
+  const similarityBoost = Number(process.env.ELEVENLABS_BROWSER_DEMO_SIMILARITY_BOOST || 0.92);
+  const style = Number(process.env.ELEVENLABS_BROWSER_DEMO_STYLE || 0.62);
+  const speakerBoostRaw = String(process.env.ELEVENLABS_BROWSER_DEMO_SPEAKER_BOOST || 'true').trim().toLowerCase();
+  const useSpeakerBoost = !['false', '0', 'no'].includes(speakerBoostRaw);
+
+  if (!normalizedText) {
+    throw new Error('Missing text for browser demo speech.');
+  }
+
+  if (!apiKey) {
+    throw new Error('Missing ELEVENLABS_API_KEY in environment.');
+  }
+
+  const response = await axios.post(
+    `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
+    {
+      text: normalizedText,
+      model_id: modelId,
+      voice_settings: {
+        stability: Number.isFinite(stability) ? Math.max(0, Math.min(1, stability)) : 0.36,
+        similarity_boost: Number.isFinite(similarityBoost) ? Math.max(0, Math.min(1, similarityBoost)) : 0.92,
+        style: Number.isFinite(style) ? Math.max(0, Math.min(1, style)) : 0.62,
+        use_speaker_boost: useSpeakerBoost
+      }
+    },
+    {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      headers: {
+        'xi-api-key': apiKey,
+        Accept: 'audio/mpeg',
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
+  const audioBuffer = Buffer.from(response.data);
+  if (!audioBuffer.length) {
+    throw new Error('ElevenLabs returned empty audio.');
+  }
+
+  return {
+    audioBuffer,
+    contentType: String(response.headers?.['content-type'] || 'audio/mpeg').trim() || 'audio/mpeg',
+    voiceId,
+    modelId
+  };
+}
+
 function extractLatestAgentMessage(payload = {}) {
   const messageCandidates = [
     payload?.messages,
@@ -2343,6 +2414,55 @@ async function getElevenLabsRegisterCallTwiml({ fromNumber, toNumber, direction 
   throw new Error('ElevenLabs register-call returned payload without TwiML <Response>.');
 }
 
+async function getElevenLabsBrowserConversationSignedUrl() {
+  const apiKey = String(process.env.ELEVENLABS_API_KEY || '').trim();
+  const agentId = String(process.env.ELEVENLABS_AGENT_ID || '').trim();
+
+  if (!apiKey || !agentId) {
+    throw new Error('Missing ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID in environment.');
+  }
+
+  const response = await axios.get(
+    'https://api.elevenlabs.io/v1/convai/conversation/get-signed-url',
+    {
+      params: {
+        agent_id: agentId,
+        include_conversation_id: true
+      },
+      headers: {
+        'xi-api-key': apiKey
+      },
+      timeout: 15000,
+      validateStatus: () => true
+    }
+  );
+
+  if (response.status < 200 || response.status >= 300) {
+    let details = `HTTP ${response.status}`;
+    const payload = response.data || {};
+    const message = typeof payload === 'object'
+      ? (payload?.detail?.message || payload?.message || payload?.detail || '')
+      : String(payload || '').trim();
+
+    if (message) {
+      details = `${details}: ${String(message).slice(0, 240)}`;
+    }
+
+    throw new Error(`ElevenLabs signed-url failed. ${details}`);
+  }
+
+  const signedUrl = String(response.data?.signed_url || '').trim();
+  const conversationId = String(response.data?.conversation_id || '').trim();
+  if (!signedUrl) {
+    throw new Error('ElevenLabs signed-url response did not include a signed_url.');
+  }
+
+  return {
+    signedUrl,
+    conversationId
+  };
+}
+
 // Health endpoint for Railway/Render
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'running', time: new Date().toISOString() });
@@ -2368,6 +2488,22 @@ app.get('/tester/config-status', async (req, res) => {
     callTranscriptTable: supabaseCallTranscriptTable,
     callQualificationWorkbookFile: callQualificationWorkbookFilePath
   });
+});
+
+app.get('/tester/browser-demo-signed-url', async (_req, res) => {
+  try {
+    const session = await getElevenLabsBrowserConversationSignedUrl();
+    return res.status(200).json({
+      status: 'ok',
+      signedUrl: session.signedUrl,
+      conversationId: session.conversationId,
+      agentId: String(process.env.ELEVENLABS_AGENT_ID || '').trim()
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: error?.message || 'Failed to create ElevenLabs browser demo session.'
+    });
+  }
 });
 
 app.get('/tester/agent-playbook', (_req, res) => {
@@ -2658,70 +2794,337 @@ app.get('/tester/call-transcript', async (req, res) => {
   });
 });
 
-function buildBrowserDemoReplyText(userText = '', preferredLanguage = 'en') {
-  const normalized = normalizeFreeText(userText);
+function getLatestBrowserDemoAssistantTurn(turns = []) {
+  if (!Array.isArray(turns)) {
+    return '';
+  }
+
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index] || {};
+    const role = String(turn?.role || turn?.speaker || '').trim().toLowerCase();
+    const text = String(turn?.text || turn?.content || '').trim();
+
+    if (!text) {
+      continue;
+    }
+
+    if (role === 'assistant' || role === 'agent' || role === 'system') {
+      return text;
+    }
+  }
+
+  return '';
+}
+
+function getLatestBrowserDemoUserTurn(turns = []) {
+  if (!Array.isArray(turns)) {
+    return '';
+  }
+
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index] || {};
+    const role = String(turn?.role || turn?.speaker || '').trim().toLowerCase();
+    const text = String(turn?.text || turn?.content || '').trim();
+
+    if (!text) {
+      continue;
+    }
+
+    if (role === 'user' || role === 'prospect' || role === 'caller' || role === 'customer') {
+      return text;
+    }
+  }
+
+  return '';
+}
+
+function countBrowserDemoAssistantTurns(turns = []) {
+  if (!Array.isArray(turns)) {
+    return 0;
+  }
+
+  return turns.filter((turn) => {
+    const role = String(turn?.role || turn?.speaker || '').trim().toLowerCase();
+    const text = String(turn?.text || turn?.content || '').trim();
+    return Boolean(text) && (role === 'assistant' || role === 'agent' || role === 'system');
+  }).length;
+}
+
+function buildBrowserDemoPoliteClose(preferredLanguage = 'en') {
   const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
 
-  if (/\b(no|not interested|stop|busy|later|no thanks)\b/i.test(normalized)) {
-    if (lang === 'hi') {
-      return 'Dhanyavaad. Aapka samay dene ke liye shukriya. Maa Umiya aapko ashirwad de.';
-    }
-
-    if (lang === 'gu') {
-      return 'Aabhar. Tamara samay mate khub khub aabhar. Maa Umiya na aashirvad sathe.';
-    }
-
-    return 'Thank you for your time. Maa Umiya bless you. We can reconnect later if you wish.';
-  }
-
-  if (/\b(yes|interested|join|support|donate|how|details)\b/i.test(normalized)) {
-    if (lang === 'hi') {
-      return 'Bahut accha. Vishv Umiya Foundation adhyatmikta, shiksha, swasthya aur samaj seva par kaam karta hai. Kya aap judne ke liye tayyar hain?';
-    }
-
-    if (lang === 'gu') {
-      return 'Saras. Vishv Umiya Foundation adhyatmikta, shikshan, aarogya ane samaj seva ma karya kare chhe. Shu tame aa mission ma jodava ichho cho?';
-    }
-
-    return 'Wonderful. Vishv Umiya Foundation serves through spirituality, education, healthcare, and community upliftment. Would you be open to joining this mission?';
-  }
-
   if (lang === 'hi') {
-    return 'Namaste. Hum Vishv Umiya Foundation se hain. Hum Umiya Dham aur samaj sewa ke liye kaam karte hain. Kya aap is mission ke baare mein aur sunna chahenge?';
+    return 'Aapke samay ke liye dhanyavaad. Maa Umiya aap aur aapke parivaar ko aashirwad dein. Aapka din shantimay ho. Jai Maa Umiya.';
   }
 
   if (lang === 'gu') {
-    return 'Namaste. Ame Vishv Umiya Foundation mathi bolie chhiye. Ame Umiya Dham ane samaj seva na mission par kaam kariye chhiye. Shu tame vadhare sambhalva ichho cho?';
+    return 'Tamara samay mate aabhar. Maa Umiya tamne ane tamara parivaar ne aashirwad aape. Tamaro divas shantimay rahe. Jai Maa Umiya.';
   }
 
-  return 'Namaste. We are calling from Vishv Umiya Foundation. We are building Umiya Dham and serving communities through spiritual and social initiatives. Would you like to know more?';
+  return 'Thank you for your time. Maa Umiya bless you and your family. Have a peaceful day. Jai Maa Umiya.';
+}
+
+function buildBrowserDemoClosingBlessing(preferredLanguage = 'en') {
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+
+  if (lang === 'hi') {
+    return 'Vishv Umiya Foundation se judne ke liye dhanyavaad. Hum aapke samay ko maante hain. Maa Umiya aap aur aapke parivaar ko aashirwad dein. Jai Maa Umiya.';
+  }
+
+  if (lang === 'gu') {
+    return 'Vishv Umiya Foundation sathe jodaya badal aabhar. Ame tamara samay ne mulyavaan maaniye chhiye. Maa Umiya tamne ane tamara parivaar ne aashirwad aape. Jai Maa Umiya.';
+  }
+
+  return 'Thank you for connecting with Vishv Umiya Foundation. We truly value your time. May Maa Umiya bless you and your family. Jai Maa Umiya.';
+}
+
+function buildBrowserDemoMissionPrompt(preferredLanguage = 'en') {
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+
+  if (lang === 'hi') {
+    return 'Kya aap chahenge ki main Maa Umiya aur Vishv Umiya Foundation ke mission ke baare mein sankshipt roop se bataun?';
+  }
+
+  if (lang === 'gu') {
+    return 'Shu tame ichho cho ke hu Maa Umiya ane Vishv Umiya Foundation na mission vishe sankshipt rite kahu?';
+  }
+
+  return 'Would you like me to briefly share our mission?';
+}
+
+function buildBrowserDemoVolunteerReply(preferredLanguage = 'en') {
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+
+  if (lang === 'hi') {
+    return 'Bahut sundar. Volunteer ke roop mein aap seva activities, community events aur outreach mein yogdaan de sakte hain. Kripya apna naam aur callback samay batayein agar aap team se judna chahte hain.';
+  }
+
+  if (lang === 'gu') {
+    return 'Khub saras. Volunteer tariqe tame seva activities, community events ane outreach ma yogdaan api shako cho. Jo tame team sathe jodava ichho to tamaru naam ane callback samay janavo.';
+  }
+
+  return 'Wonderful. As a volunteer, you can support service activities, community events, and outreach efforts. If you want to connect with the team, please share your name and a callback time.';
+}
+
+function buildBrowserDemoDonationReply(preferredLanguage = 'en') {
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+
+  if (lang === 'hi') {
+    return 'Dhanyavaad. Donation aur adhik jaankari ke liye aap https://www.vuf.org/ dekh sakte hain. Agar aap chahein to main aapko hamari team se connect kar sakta hoon.';
+  }
+
+  if (lang === 'gu') {
+    return 'Aabhar. Donation ane vadhu mahiti mate tame https://www.vuf.org/ joi shako cho. Jo tame ichho to hu tamne amari team sathe connect kari saku chhu.';
+  }
+
+  return 'Thank you. For donation information and more details, you can visit https://www.vuf.org/. If you like, I can also help connect you with our team.';
+}
+
+function buildBrowserDemoReplyText(userText = '', preferredLanguage = 'en', turns = []) {
+  const normalized = normalizeFreeText(userText);
+  const lang = ['en', 'hi', 'gu'].includes(preferredLanguage) ? preferredLanguage : 'en';
+  const lastAssistant = normalizeFreeText(getLatestBrowserDemoAssistantTurn(turns));
+  const lastUser = normalizeFreeText(getLatestBrowserDemoUserTurn(turns));
+  const assistantTurnCount = countBrowserDemoAssistantTurns(turns);
+  const simpleAffirmation = /^(yes|yeah|yep|sure|ok|okay|haan|han|hmm|acha|achha|ha|haji|hajji|yes tell me|tell me|bolo|kaho|haa|haanji)$/i.test(normalized);
+  const simpleRejection = /\b(no|not interested|stop|busy|later|no thanks|call me later|maybe later|nahi|nahin|na|not now)\b/i.test(normalized);
+  const askedTeamConnection = /connect you with our team|team se connect|team sathe connect|callback time/i.test(lastAssistant);
+  const askedMissionPrompt = /briefly share our mission|mission vishe sankshipt|mission ke baare mein sankshipt/i.test(lastAssistant);
+  const askedTemplePrompt = /one of the tallest temples|sauthi uncha mandiro|sabse unche mandiron/i.test(lastAssistant);
+
+  const chooseReply = (primaryReply, alternateReply = '') => {
+    const primary = normalizeTranscriptText(primaryReply);
+    const alternate = normalizeTranscriptText(alternateReply);
+    const previousAssistant = normalizeFreeText(lastAssistant);
+    const previousUser = normalizeFreeText(lastUser);
+
+    if (primary && normalizeFreeText(primary) !== previousAssistant) {
+      return primary;
+    }
+
+    if (alternate && normalizeFreeText(alternate) !== previousAssistant) {
+      return alternate;
+    }
+
+    if (previousUser && previousUser === normalized) {
+      return buildBrowserDemoClosingBlessing(lang);
+    }
+
+    return primary || alternate || buildBrowserDemoClosingBlessing(lang);
+  };
+
+  if (simpleRejection) {
+    return chooseReply(buildBrowserDemoPoliteClose(lang), buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (askedTeamConnection && simpleAffirmation) {
+    if (lang === 'hi') {
+      return chooseReply('Bahut accha. Kripya apna naam aur sahi callback samay batayein. Main isse next step ke liye note kar leta hoon.', buildBrowserDemoClosingBlessing(lang));
+    }
+    if (lang === 'gu') {
+      return chooseReply('Saras. Krupaya tamaru naam ane saro callback samay janavo. Hu agad na step mate note kari laish.', buildBrowserDemoClosingBlessing(lang));
+    }
+    return chooseReply('Wonderful. Please share your name and a good callback time, and I will note it for the next step.', buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (/\b(volunteer|seva|help personally|join as volunteer|volunteering|serve with you)\b/i.test(normalized)) {
+    return chooseReply(buildBrowserDemoVolunteerReply(lang), buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (/\b(donate|donation|contribute|financially|funding|charity)\b/i.test(normalized)) {
+    return chooseReply(buildBrowserDemoDonationReply(lang), buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (/\b(website|site|web|url|vuf\.org)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return chooseReply('Adhik jaankari ke liye aap https://www.vuf.org/ dekh sakte hain. Agar aap chahein to main aapko hamari team se bhi connect kar sakta hoon.', buildBrowserDemoClosingBlessing(lang));
+    }
+    if (lang === 'gu') {
+      return chooseReply('Vadhu mahiti mate tame https://www.vuf.org/ joi shako cho. Jo tame ichho to hu tamne amari team sathe pan connect kari saku chhu.', buildBrowserDemoClosingBlessing(lang));
+    }
+    return chooseReply('You can learn more at https://www.vuf.org/. If you would like, I can also help connect you with our team.', buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (/\b(ahmedabad|where|location|based|address|which city|from where)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return chooseReply('Vishv Umiya Foundation Ahmedabad ki ek non-profit sanstha hai. Yeh adhyatmikta, shiksha, swasthya aur samudayik unnati ke liye kaam karti hai.', 'Agar aap chahein to main Umiya Dham ya seva kaam ke baare mein aur bata sakta hoon.');
+    }
+    if (lang === 'gu') {
+      return chooseReply('Vishv Umiya Foundation Ahmedabad adharit ek non-profit sanstha chhe. Te adhyatmikta, shikshan, aarogya ane samudayik upliftment mate karya kare chhe.', 'Jo tame ichho to hu Umiya Dham athva seva karya vishe vadhu kahi saku chhu.');
+    }
+    return chooseReply('Vishv Umiya Foundation is a non-profit organization based in Ahmedabad. It works for spirituality, education, healthcare, and community upliftment.', 'If you would like, I can also share more about Umiya Dham or its service work.');
+  }
+
+  if (/\b(who are you|what is this|what do you do|about you|about foundation|what foundation|are you ai|agent)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return chooseReply('Main Vishv Umiya Foundation ka browser AI voice agent hoon. Mera kaam foundation ki jaankari dena, sawalon ke jawaab dena aur zarurat ho to aapko team se connect karna hai.', 'Vishv Umiya Foundation adhyatmikta, shiksha, swasthya aur samaj seva par kaam karti hai.');
+    }
+    if (lang === 'gu') {
+      return chooseReply('Hu Vishv Umiya Foundation no browser AI voice agent chhu. Maru kaam foundation vishe mahiti aapvu, prashno na jawaab aapva ane jarur pade to tamne team sathe connect karvu chhe.', 'Vishv Umiya Foundation adhyatmikta, shikshan, aarogya ane samaj seva mate karya kare chhe.');
+    }
+    return chooseReply('I am the Vishv Umiya Foundation browser AI voice agent. My role is to share foundation information, answer questions, and help connect you with the team if needed.', 'Vishv Umiya Foundation serves society through spirituality, education, healthcare, and community upliftment.');
+  }
+
+  if (/\b(what is umiya dham|umiya dham|temple|mandir|maa umiya)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return chooseReply('Umiya Dham Maa Umiya ki shraddha, ekta aur bhakti ka prateek hai. Ise duniya ke sabse unche mandiron mein se ek ke roop mein vikasit kiya ja raha hai.', 'Agar aap chahein to main foundation ke seva kaam ke baare mein bhi bata sakta hoon.');
+    }
+    if (lang === 'gu') {
+      return chooseReply('Umiya Dham Maa Umiya prati shraddha, ekta ane bhakti nu prateek chhe. Te duniya na sauthi uncha mandiro ma thi ek tarike vikasi rahyu chhe.', 'Jo tame ichho to hu foundation na seva karya vishe pan kahi saku chhu.');
+    }
+    return chooseReply('Umiya Dham symbolizes faith, unity, and devotion to Maa Umiya. It is being developed as one of the tallest temples in the world.', 'If you like, I can also share more about the foundation mission.');
+  }
+
+  if (/\b(what work|what services|what activities|initiatives|what do you support|mission)\b/i.test(normalized)) {
+    if (lang === 'hi') {
+      return chooseReply('Vishv Umiya Foundation adhyatmikta, shiksha, swasthya, samaj seva, community support aur social empowerment par kaam karti hai.', 'Agar aap chahein to main volunteer, donation ya website ki jaankari bhi de sakta hoon.');
+    }
+    if (lang === 'gu') {
+      return chooseReply('Vishv Umiya Foundation adhyatmikta, shikshan, aarogya, samaj seva, community support ane social empowerment par karya kare chhe.', 'Jo tame ichho to hu volunteer, donation athva website vishe pan kahi saku chhu.');
+    }
+    return chooseReply('Vishv Umiya Foundation works in spirituality, education, healthcare, community service, support initiatives, and social empowerment.', 'If you like, I can also share volunteer, donation, or website information.');
+  }
+
+  if ((/\b(yes|interested|join|support|how|details|learn more|tell me more)\b/i.test(normalized) || simpleAffirmation) && askedTemplePrompt) {
+    if (lang === 'hi') {
+      return chooseReply('Vishv Umiya Foundation Ahmedabad ki ek non-profit sanstha hai. Yeh adhyatmikta, shiksha, swasthya aur samudayik unnati ke liye kaam karti hai. Kya aap volunteer, website, ya team support ke baare mein jaana chahenge?', buildBrowserDemoClosingBlessing(lang));
+    }
+    if (lang === 'gu') {
+      return chooseReply('Vishv Umiya Foundation Ahmedabad adharit non-profit sanstha chhe. Te adhyatmikta, shikshan, aarogya ane samudayik upliftment mate karya kare chhe. Shu tame volunteer, website athva team support vishe janva ichho cho?', buildBrowserDemoClosingBlessing(lang));
+    }
+    return chooseReply('Vishv Umiya Foundation is a non-profit organization based in Ahmedabad. It serves society through spirituality, education, healthcare, and community upliftment. Would you like to know about volunteering, the website, or team support?', buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (/\b(yes|interested|join|support|how|details|learn more|tell me more)\b/i.test(normalized) || simpleAffirmation) {
+    if (lang === 'hi') {
+      return chooseReply('Dhanyavaad. Umiya Dham duniya ke sabse unche mandiron mein se ek ke roop mein vikasit ho raha hai. Yeh shraddha, ekta aur bhakti ka prateek hai. Kya main foundation ke mission ke baare mein bhi sankshipt roop se bataun?', buildBrowserDemoClosingBlessing(lang));
+    }
+    if (lang === 'gu') {
+      return chooseReply('Aabhar. Umiya Dham duniya na sauthi uncha mandiro ma thi ek tarike vikasi rahyu chhe. Te shraddha, ekta ane bhakti nu prateek chhe. Shu hu foundation na mission vishe pan sankshipt rite kahi saku?', buildBrowserDemoClosingBlessing(lang));
+    }
+    return chooseReply('Thank you. Umiya Dham is being developed as one of the tallest temples in the world, symbolizing faith, unity, and devotion. Would you like me to briefly share the foundation mission as well?', buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (askedMissionPrompt) {
+    return chooseReply(buildBrowserDemoPoliteClose(lang), buildBrowserDemoClosingBlessing(lang));
+  }
+
+  if (assistantTurnCount >= 3) {
+    if (lang === 'hi') {
+      return chooseReply('Main aapki madad ke liye yahan hoon. Aap volunteer, donation, website, Umiya Dham, ya team support mein se kisi bhi vishay par pooch sakte hain.', buildBrowserDemoClosingBlessing(lang));
+    }
+    if (lang === 'gu') {
+      return chooseReply('Hu tamari madad mate ahiya chhu. Tame volunteer, donation, website, Umiya Dham athva team support mathi koi pan vishay vishe puchi shako cho.', buildBrowserDemoClosingBlessing(lang));
+    }
+    return chooseReply('I am here to help. You can ask about volunteering, donations, the website, Umiya Dham, or team support.', buildBrowserDemoClosingBlessing(lang));
+  }
+
+  return chooseReply(buildBrowserDemoMissionPrompt(lang), buildBrowserDemoClosingBlessing(lang));
 }
 
 app.post('/tester/browser-demo-reply', (req, res) => {
   const userText = normalizeTranscriptText(String(req.body?.text || '').trim());
   const language = String(req.body?.language || detectMessageLanguageCode(userText)).trim().toLowerCase();
   const preferredLanguage = ['en', 'hi', 'gu'].includes(language) ? language : 'en';
-  const reply = buildBrowserDemoReplyText(userText, preferredLanguage);
+  const turns = Array.isArray(req.body?.turns) ? req.body.turns : [];
+  const reply = buildBrowserDemoReplyText(userText, preferredLanguage, turns);
 
   appendConversationLog({
     source: 'browser-demo',
     event: 'demo-turn',
     language: preferredLanguage,
     userText,
+    turns,
     reply
   });
 
   return res.status(200).json({
+    status: 'ok',
     language: preferredLanguage,
     reply
   });
 });
 
-app.get('/tester/public-url-health', async (_req, res) => {
-  const health = await checkPublicBaseUrlHealth();
-  return res.status(health.ok ? 200 : 503).json(health);
-});
+app.post('/tester/browser-demo-tts', async (req, res) => {
+  const text = normalizeTranscriptText(String(req.body?.text || '').trim());
+  const language = String(req.body?.language || detectMessageLanguageCode(text)).trim().toLowerCase();
+  const preferredLanguage = ['en', 'hi', 'gu'].includes(language) ? language : 'en';
 
+  if (!text) {
+    return res.status(400).json({ error: 'Missing text for browser demo TTS.' });
+  }
+
+  try {
+    const synthesized = await synthesizeBrowserDemoSpeechWithElevenLabs(text, preferredLanguage);
+
+    appendConversationLog({
+      source: 'browser-demo',
+      event: 'demo-tts-generated',
+      language: preferredLanguage,
+      text,
+      voiceId: synthesized.voiceId,
+      modelId: synthesized.modelId,
+      bytes: synthesized.audioBuffer.length
+    });
+
+    res.setHeader('Content-Type', synthesized.contentType || 'audio/mpeg');
+    res.setHeader('Content-Length', String(synthesized.audioBuffer.length));
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(synthesized.audioBuffer);
+  } catch (error) {
+    appendConversationLog({
+      source: 'browser-demo',
+      event: 'demo-tts-failed',
+      language: preferredLanguage,
+      text,
+      error: error?.message || 'Unknown ElevenLabs browser demo TTS error'
+    });
+
+    return res.status(502).json({
+      error: error?.message || 'Failed to synthesize ElevenLabs browser demo speech.'
+    });
+  }
+});
 app.post('/twilio/call-status', (req, res) => {
   const callSid = String(req.body?.CallSid || 'unknown');
   const callStatus = String(req.body?.CallStatus || 'unknown').toLowerCase();
