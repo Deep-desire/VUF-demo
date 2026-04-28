@@ -2463,6 +2463,52 @@ async function getElevenLabsBrowserConversationSignedUrl() {
   };
 }
 
+async function getElevenLabsBrowserConversationToken() {
+  const apiKey = String(process.env.ELEVENLABS_API_KEY || '').trim();
+  const agentId = String(process.env.ELEVENLABS_AGENT_ID || '').trim();
+
+  if (!apiKey || !agentId) {
+    throw new Error('Missing ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID in environment.');
+  }
+
+  const response = await axios.get(
+    'https://api.elevenlabs.io/v1/convai/conversation/token',
+    {
+      params: {
+        agent_id: agentId
+      },
+      headers: {
+        'xi-api-key': apiKey
+      },
+      timeout: 15000,
+      validateStatus: () => true
+    }
+  );
+
+  if (response.status < 200 || response.status >= 300) {
+    let details = `HTTP ${response.status}`;
+    const payload = response.data || {};
+    const message = typeof payload === 'object'
+      ? (payload?.detail?.message || payload?.message || payload?.detail || '')
+      : String(payload || '').trim();
+
+    if (message) {
+      details = `${details}: ${String(message).slice(0, 240)}`;
+    }
+
+    throw new Error(`ElevenLabs conversation-token failed. ${details}`);
+  }
+
+  const token = String(response.data?.token || '').trim();
+  if (!token) {
+    throw new Error('ElevenLabs conversation-token response did not include a token.');
+  }
+
+  return {
+    token
+  };
+}
+
 // Health endpoint for Railway/Render
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'running', time: new Date().toISOString() });
@@ -2502,6 +2548,21 @@ app.get('/tester/browser-demo-signed-url', async (_req, res) => {
   } catch (error) {
     return res.status(502).json({
       error: error?.message || 'Failed to create ElevenLabs browser demo session.'
+    });
+  }
+});
+
+app.get('/tester/browser-demo-token', async (_req, res) => {
+  try {
+    const session = await getElevenLabsBrowserConversationToken();
+    return res.status(200).json({
+      status: 'ok',
+      conversationToken: session.token,
+      agentId: String(process.env.ELEVENLABS_AGENT_ID || '').trim()
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: error?.message || 'Failed to create ElevenLabs browser demo token.'
     });
   }
 });

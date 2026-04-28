@@ -354,6 +354,7 @@
       let browserDemoAudioUrl = '';
       let browserDemoConversation = null;
       let browserDemoConversationFactory = null;
+      let browserDemoUserActivityCleanup = null;
 
       const LANG_LABELS = {
         all: 'All',
@@ -952,6 +953,30 @@
         output.scrollTop = output.scrollHeight;
       }
 
+      function updateLastBrowserDemoAgentLine(text) {
+        const output = document.getElementById('browserDemoOut');
+        if (!output) {
+          return;
+        }
+
+        const normalizedText = String(text || '').trim();
+        if (!normalizedText) {
+          return;
+        }
+
+        const blocks = String(output.textContent || '').split('\n\n');
+        for (let index = blocks.length - 1; index >= 0; index -= 1) {
+          if (String(blocks[index] || '').startsWith('Agent: ')) {
+            blocks[index] = `Agent: ${normalizedText}`;
+            output.textContent = blocks.join('\n\n');
+            output.scrollTop = output.scrollHeight;
+            return;
+          }
+        }
+
+        appendBrowserDemoLine(`Agent: ${normalizedText}`);
+      }
+
       function setBrowserDemoStatus(text) {
         const status = document.getElementById('browserDemoStatus');
         if (status) {
@@ -1000,17 +1025,26 @@
         return browserDemoConversationFactory;
       }
 
-      async function getBrowserDemoSignedUrl() {
-        const { response } = await requestApi('/tester/browser-demo-signed-url', { method: 'GET' }, 15000);
+      function getBrowserDemoLanguageOverride(languageCode) {
+        const normalized = String(languageCode || 'en').trim().toLowerCase();
+        if (normalized === 'hi' || normalized === 'gu' || normalized === 'en') {
+          return normalized;
+        }
+
+        return 'en';
+      }
+
+      async function getBrowserDemoConversationToken() {
+        const { response } = await requestApi('/tester/browser-demo-token', { method: 'GET' }, 15000);
         const text = await getTextResponse(response);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${text}`);
         }
 
         const parsed = JSON.parse(text);
-        const signedUrl = String(parsed?.signedUrl || '').trim();
-        if (!signedUrl) {
-          throw new Error('Signed URL missing from browser demo session response.');
+        const conversationToken = String(parsed?.conversationToken || '').trim();
+        if (!conversationToken) {
+          throw new Error('Conversation token missing from browser demo session response.');
         }
 
         return parsed;
@@ -1020,6 +1054,14 @@
         browserDemoRunning = false;
         browserDemoListeningPaused = false;
         browserDemoBusy = false;
+        if (typeof browserDemoUserActivityCleanup === 'function') {
+          try {
+            browserDemoUserActivityCleanup();
+          } catch {
+            // Ignore cleanup errors.
+          }
+        }
+        browserDemoUserActivityCleanup = null;
         if (browserDemoConversation && typeof browserDemoConversation.endSession === 'function') {
           try {
             await browserDemoConversation.endSession();
@@ -1033,6 +1075,36 @@
         window.speechSynthesis.cancel();
         setBrowserDemoStatus('Idle.');
         setBrowserDemoButtons();
+      }
+
+      function setupBrowserDemoUserActivity(conversation) {
+        if (!conversation || typeof conversation.sendUserActivity !== 'function') {
+          return () => {};
+        }
+
+        let lastSentAt = 0;
+        const emitActivity = () => {
+          const now = Date.now();
+          if (!browserDemoRunning || now - lastSentAt < 1200) {
+            return;
+          }
+
+          lastSentAt = now;
+          Promise.resolve(conversation.sendUserActivity()).catch(() => {
+            // Ignore activity ping failures.
+          });
+        };
+
+        const events = ['pointerdown', 'keydown', 'touchstart'];
+        for (const eventName of events) {
+          window.addEventListener(eventName, emitActivity, { passive: true });
+        }
+
+        return () => {
+          for (const eventName of events) {
+            window.removeEventListener(eventName, emitActivity);
+          }
+        };
       }
 
       async function startBrowserDemoSession() {
@@ -1049,21 +1121,27 @@
         setBrowserDemoStatus('Connecting to ElevenLabs agent...');
 
         try {
-          const [{ signedUrl, conversationId }, Conversation] = await Promise.all([
-            getBrowserDemoSignedUrl(),
+          const [{ conversationToken }, Conversation] = await Promise.all([
+            getBrowserDemoConversationToken(),
             getBrowserDemoConversationFactory()
           ]);
 
-          appendBrowserDemoLine(`System: Connected browser demo to ElevenLabs agent${conversationId ? ` (${conversationId})` : ''}.`);
+          appendBrowserDemoLine('System: Starting live ElevenLabs browser conversation.');
 
           browserDemoConversation = await Conversation.startSession({
-            signedUrl,
-            connectionType: 'websocket',
+            conversationToken,
+            connectionType: 'webrtc',
+            overrides: {
+              agent: {
+                language: getBrowserDemoLanguageOverride(selectedLanguage)
+              }
+            },
             onConnect: (metadata) => {
-              const activeConversationId = String(metadata?.conversationId || conversationId || '').trim();
+              const activeConversationId = String(metadata?.conversationId || '').trim();
               setBrowserDemoStatus(activeConversationId
                 ? `Connected to ElevenLabs agent. Conversation: ${activeConversationId}`
                 : 'Connected to ElevenLabs agent. Speak naturally.');
+              appendBrowserDemoLine('System: You can speak anytime to interrupt the agent.');
             },
             onDisconnect: () => {
               browserDemoConversation = null;
@@ -1080,8 +1158,39 @@
               setBrowserDemoStatus(`Error: ${message}`);
             },
             onMessage: (message) => {
+              const eventType = String(message?.type || '').trim().toLowerCase();
               const source = String(message?.source || '').trim().toLowerCase();
               const text = String(message?.message || message?.text || '').trim();
+
+              if (eventType === 'agent_response_correction') {
+                const correctedText = String(
+                  message?.correctedAgentResponse
+                  || message?.agent_response_correction_event?.corrected_agent_response
+                  || message?.corrected_agent_response
+                  || message?.text
+                  || ''
+                ).trim();
+
+                if (correctedText) {
+                  if (browserDemoTurns.length > 0) {
+                    for (let index = browserDemoTurns.length - 1; index >= 0; index -= 1) {
+                      const turn = browserDemoTurns[index] || {};
+                      if (String(turn?.role || '').trim().toLowerCase() === 'assistant') {
+                        browserDemoTurns[index] = {
+                          ...turn,
+                          text: correctedText
+                        };
+                        break;
+                      }
+                    }
+                  }
+
+                  updateLastBrowserDemoAgentLine(correctedText);
+                  setBrowserDemoStatus('User interruption detected. Agent response updated.');
+                }
+                return;
+              }
+
               if (!text) {
                 return;
               }
@@ -1098,6 +1207,16 @@
               setBrowserDemoStatus('Agent is responding...');
             }
           });
+
+          browserDemoUserActivityCleanup = setupBrowserDemoUserActivity(browserDemoConversation);
+
+          if (browserDemoConversation && typeof browserDemoConversation.sendContextualUpdate === 'function') {
+            Promise.resolve(browserDemoConversation.sendContextualUpdate(
+              `The user selected ${getBrowserDemoLanguageOverride(selectedLanguage)} for this browser demo. Keep responses concise, natural, and interruption-friendly.`
+            )).catch(() => {
+              // Ignore non-critical contextual update failures.
+            });
+          }
         } catch (error) {
           browserDemoRunning = false;
           browserDemoConversation = null;
