@@ -267,11 +267,11 @@
           <span class="pill" id="status-agent">Agent: Checking...</span>
           <span class="pill" id="status-public">Public URL: Checking...</span>
         </div>
-        <div class="field" style="margin-top:12px;">
+        <!-- <div class="field" style="margin-top:12px;">
           <label for="globalPhone">Your Test Number (E.164, for example +27871234567)</label>
           <input id="globalPhone" value="+27700000001" />
           <button id="applyGlobalPhone">Apply Number To Call Field</button>
-        </div>
+        </div> -->
       </section>
 
       <section class="grid">
@@ -1332,10 +1332,10 @@
         }
       }
 
-      document.getElementById('applyGlobalPhone').addEventListener('click', () => {
-        const phone = document.getElementById('globalPhone').value.trim();
-        document.getElementById('realTo').value = phone;
-      });
+      // document.getElementById('applyGlobalPhone').addEventListener('click', () => {
+      //   const phone = document.getElementById('globalPhone').value.trim();
+      //   document.getElementById('realTo').value = phone;
+      // });
 
       function handleStartCallSuccess(responseText, to) {
         let parsed = null;
