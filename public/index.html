@@ -1147,19 +1147,6 @@
           twilioEl.textContent = 'Twilio: ' + (cfg.hasTwilioClient ? 'configured' : 'missing env');
           agentEl.textContent = 'Agent: ElevenLabs webhook mode';
 
-          const resolvedPublicBase = String(cfg.resolvedPublicBaseUrl || '').trim().replace(/\/+$/, '');
-          const resolvedPublicHealthOk = Boolean(cfg?.resolvedPublicBaseHealth?.ok);
-          if (
-            resolvedPublicBase &&
-            resolvedPublicHealthOk &&
-            !queryApiBase &&
-            !storedApiBase &&
-            !isLocalHostName(window.location.hostname) &&
-            resolvedPublicBase !== sameOriginBase
-          ) {
-            API_BASE = resolvedPublicBase;
-          }
-
           const configuredPublicUrl = cfg.publicBaseUrl ? cfg.publicBaseUrl : 'missing PUBLIC_BASE_URL';
           const resolvedPublicUrl = cfg.resolvedPublicBaseUrl ? cfg.resolvedPublicBaseUrl : configuredPublicUrl;
           try {
