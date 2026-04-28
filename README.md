@@ -42,8 +42,10 @@ Important keys:
 - `MAX_CALL_SECONDS`
 - `TWILIO_DIAL_TIMEOUT_SECONDS`
 - `PUBLIC_BASE_URL`
-- `CONVERSATION_LOG_FILE`
-- `CALL_TRANSCRIPT_LOG_FILE`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_CONVERSATION_LOG_TABLE`
+- `SUPABASE_CALL_TRANSCRIPT_TABLE`
 - `CALL_QUALIFICATION_WORKBOOK_FILE`
 - `ELEVENLABS_WEBHOOK_REQUIRE_SIGNATURE`
 - `ELEVENLABS_WEBHOOK_SECRET`
@@ -66,6 +68,12 @@ Use `http://localhost:3000/tester`:
 1. Enter prospect number.
 2. Click `Start Real Call`.
 3. Monitor call logs and transcript endpoints.
+
+## 8) Supabase setup
+
+1. Create a Supabase project.
+2. Run the schema in [scripts/supabase-schema.sql](scripts/supabase-schema.sql).
+3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env` (or your Vercel env).
 
 ## 7) Endpoints
 

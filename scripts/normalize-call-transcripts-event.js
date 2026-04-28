@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const filePath = 'data/call-transcripts.jsonl';
+const filePath = 'data/call-transcripts.json';
 const placeholder = 'Transcript not available: no ElevenLabs transcript webhook was received for this call.';
 
 if (!fs.existsSync(filePath)) {
@@ -8,18 +8,27 @@ if (!fs.existsSync(filePath)) {
   process.exit(0);
 }
 
-const rows = fs.readFileSync(filePath, 'utf8')
-  .split(/\r?\n/)
-  .map((line) => line.trim())
-  .filter(Boolean)
-  .map((line) => {
-    try {
-      return JSON.parse(line);
-    } catch {
-      return null;
-    }
-  })
-  .filter(Boolean);
+const raw = fs.readFileSync(filePath, 'utf8');
+const trimmed = raw.trim();
+let rows = [];
+
+if (trimmed.startsWith('[')) {
+  const parsed = JSON.parse(trimmed);
+  rows = Array.isArray(parsed) ? parsed : [];
+} else {
+  rows = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
 
 let dropped = 0;
 let changed = 0;
@@ -62,5 +71,5 @@ const normalized = rows
     return next;
   });
 
-fs.writeFileSync(filePath, `${normalized.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
 console.log(JSON.stringify({ before: rows.length, after: normalized.length, dropped, changed }, null, 2));

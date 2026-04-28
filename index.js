@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const xlsx = require('xlsx');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.set('trust proxy', true);
@@ -60,15 +61,11 @@ const CONVERSATION_LOG_RETENTION_LIMIT = (() => {
 
   return Math.max(50, Math.min(50000, Math.round(raw)));
 })();
-const conversationLogFilePath = path.isAbsolute(String(process.env.CONVERSATION_LOG_FILE || '').trim())
-  ? String(process.env.CONVERSATION_LOG_FILE || '').trim()
-  : path.join(__dirname, String(process.env.CONVERSATION_LOG_FILE || 'data/conversation-history.jsonl').trim());
-const callTranscriptLogFilePath = path.isAbsolute(String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim())
-  ? String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim()
-  : path.join(__dirname, String(process.env.CALL_TRANSCRIPT_LOG_FILE || 'data/call-transcripts.jsonl').trim());
-const marketingLeadsFilePath = path.isAbsolute(String(process.env.MARKETING_LEADS_FILE || '').trim())
-  ? String(process.env.MARKETING_LEADS_FILE || '').trim()
-  : path.join(__dirname, String(process.env.MARKETING_LEADS_FILE || 'data/marketing-leads.json').trim());
+const supabaseUrl = String(process.env.SUPABASE_URL || '').trim();
+const supabaseServiceKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+const supabaseConversationLogTable = String(process.env.SUPABASE_CONVERSATION_LOG_TABLE || 'conversation_logs').trim();
+const supabaseCallTranscriptTable = String(process.env.SUPABASE_CALL_TRANSCRIPT_TABLE || 'call_transcripts').trim();
+let supabaseClient = null;
 const callQualificationWorkbookFilePath = path.isAbsolute(String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim())
   ? String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim()
   : path.join(__dirname, String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || 'data/call-qualifications.xlsx').trim());
@@ -123,6 +120,23 @@ function normalizePublicBaseUrl(raw = '') {
   } catch {
     return '';
   }
+}
+
+function getSupabaseClient() {
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return null;
+  }
+
+  if (!supabaseClient) {
+    supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+  }
+
+  return supabaseClient;
 }
 
 function isPrivateOrLoopbackHostname(hostname = '') {
@@ -562,10 +576,10 @@ function buildQualificationWorkbookRows(rows = []) {
   });
 }
 
-function syncCallQualificationWorkbook() {
+async function syncCallQualificationWorkbook() {
   try {
     ensureCallQualificationWorkbookDirectory();
-    const transcriptRows = readCallTranscriptSnapshots(20000);
+    const transcriptRows = await readCallTranscriptSnapshots(20000);
     const qualificationRows = buildQualificationWorkbookRows(buildConversationRowsFromSnapshots(transcriptRows, 5000));
 
     const workbook = xlsx.utils.book_new();
@@ -609,20 +623,26 @@ function syncCallQualificationWorkbook() {
   }
 }
 
-function checkConfig() {
+async function checkConfig() {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
     console.warn('[config] Missing environment variables:', missing.join(', '));
   }
 
+  if (!supabaseUrl || !supabaseServiceKey) {
+    console.warn('[config] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing.');
+  }
+
   try {
-    enforceConversationLogRetention(CONVERSATION_LOG_RETENTION_LIMIT);
+    await enforceConversationLogRetention(CONVERSATION_LOG_RETENTION_LIMIT);
   } catch (error) {
     console.warn('[config] Could not enforce conversation log retention:', error?.message || error);
   }
 
-  console.log(`[config] Conversation log file: ${conversationLogFilePath}`);
+  console.log(`[config] Supabase URL: ${supabaseUrl || 'missing'}`);
+  console.log(`[config] Conversation log table: ${supabaseConversationLogTable}`);
+  console.log(`[config] Call transcript table: ${supabaseCallTranscriptTable}`);
   console.log(`[config] Conversation log retention limit: ${CONVERSATION_LOG_RETENTION_LIMIT}`);
 }
 
@@ -979,14 +999,6 @@ function finalizeConversationAggregateForCall({ callSid = '', callStatus = '', t
   deleteConversationAggregate(aggregate);
 }
 
-function ensureConversationLogDirectory() {
-  fs.mkdirSync(path.dirname(conversationLogFilePath), { recursive: true });
-}
-
-function ensureCallTranscriptLogDirectory() {
-  fs.mkdirSync(path.dirname(callTranscriptLogFilePath), { recursive: true });
-}
-
 function isUnavailableTranscriptText(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized.startsWith('transcript not available:');
@@ -1063,46 +1075,129 @@ function mergeCallTranscriptRecord(existing = {}, incoming = {}) {
   return merged;
 }
 
+function readJsonArrayFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf8');
+  if (!raw.trim()) {
+    return [];
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.error('[json-array] Failed to parse JSON:', error?.message || error);
+      return [];
+    }
+  }
+
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsed = [];
+  for (const line of lines) {
+    try {
+      parsed.push(JSON.parse(line));
+    } catch (_err) {
+      // Ignore malformed JSONL fallback lines.
+    }
+  }
+
+  return parsed;
+}
+
+function writeJsonArrayFile(filePath, rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  fs.writeFileSync(filePath, `${JSON.stringify(safeRows, null, 2)}\n`, 'utf8');
+}
+
 function appendConversationLog(record = {}) {
+  void appendConversationLogAsync(record);
+}
+
+async function appendConversationLogAsync(record = {}) {
+  const client = getSupabaseClient();
+  if (!client) {
+    logSupabaseNotConfigured('conversation-log');
+    return;
+  }
+
   try {
-    ensureConversationLogDirectory();
     const safeRecord = {
       loggedAt: new Date().toISOString(),
       ...record
     };
-    fs.appendFileSync(conversationLogFilePath, `${JSON.stringify(safeRecord)}\n`, 'utf8');
-    enforceConversationLogRetention(CONVERSATION_LOG_RETENTION_LIMIT);
+
+    const row = buildSupabaseConversationRow(safeRecord);
+    const { error } = await client
+      .from(supabaseConversationLogTable)
+      .insert(row);
+
+    if (error) {
+      throw error;
+    }
+
+    await enforceConversationLogRetention(CONVERSATION_LOG_RETENTION_LIMIT);
   } catch (error) {
     console.error('[conversation-log] Failed to append log:', error?.message || error);
   }
 }
 
-function enforceConversationLogRetention(limit = CONVERSATION_LOG_RETENTION_LIMIT) {
-  if (!fs.existsSync(conversationLogFilePath)) {
+async function enforceConversationLogRetention(limit = CONVERSATION_LOG_RETENTION_LIMIT) {
+  const client = getSupabaseClient();
+  if (!client) {
     return;
   }
 
-  const raw = fs.readFileSync(conversationLogFilePath, 'utf8');
-  if (!raw.trim()) {
+  if (!Number.isFinite(limit) || limit <= 0) {
     return;
   }
 
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const { data, error } = await client
+    .from(supabaseConversationLogTable)
+    .select('logged_at')
+    .order('logged_at', { ascending: false })
+    .range(Math.max(0, limit - 1), Math.max(0, limit - 1));
 
-  if (lines.length <= limit) {
+  if (error) {
+    console.warn('[conversation-log] Retention lookup failed:', error?.message || error);
     return;
   }
 
-  const retained = lines.slice(lines.length - limit);
-  fs.writeFileSync(conversationLogFilePath, `${retained.join('\n')}\n`, 'utf8');
+  const cutoff = data?.[0]?.logged_at;
+  if (!cutoff) {
+    return;
+  }
+
+  const { error: deleteError } = await client
+    .from(supabaseConversationLogTable)
+    .delete()
+    .lt('logged_at', cutoff);
+
+  if (deleteError) {
+    console.warn('[conversation-log] Retention cleanup failed:', deleteError?.message || deleteError);
+  }
 }
 
 function appendCallTranscriptSnapshot(record = {}) {
+  void appendCallTranscriptSnapshotAsync(record);
+}
+
+async function appendCallTranscriptSnapshotAsync(record = {}) {
+  const client = getSupabaseClient();
+  if (!client) {
+    logSupabaseNotConfigured('call-transcript-log');
+    return;
+  }
+
   try {
-    ensureCallTranscriptLogDirectory();
     const safeRecord = {
       loggedAt: new Date().toISOString(),
       ...record
@@ -1112,211 +1207,161 @@ function appendCallTranscriptSnapshot(record = {}) {
       return;
     }
 
-    const existingRows = readCallTranscriptSnapshots(20000);
     const incomingCallSid = String(safeRecord?.callSid || '').trim();
     const incomingConversationId = String(safeRecord?.conversationId || '').trim();
+    const conflictColumn = incomingCallSid ? 'call_sid' : (incomingConversationId ? 'conversation_id' : '');
+    const conflictValue = incomingCallSid || incomingConversationId;
 
-    const matchIndex = existingRows.findIndex((row) => {
-      const rowCallSid = String(row?.callSid || '').trim();
-      const rowConversationId = String(row?.conversationId || '').trim();
-
-      if (incomingCallSid && rowCallSid === incomingCallSid) {
-        return true;
-      }
-
-      if (incomingConversationId && rowConversationId === incomingConversationId) {
-        return true;
-      }
-
-      return false;
-    });
-
-    if (matchIndex < 0) {
-      fs.appendFileSync(callTranscriptLogFilePath, `${JSON.stringify(safeRecord)}\n`, 'utf8');
-      syncCallQualificationWorkbook();
+    if (!conflictColumn || !conflictValue) {
       return;
     }
 
-    const current = existingRows[matchIndex] || {};
+    const { data: existingRows, error: existingError } = await client
+      .from(supabaseCallTranscriptTable)
+      .select('id, record, logged_at')
+      .eq(conflictColumn, conflictValue)
+      .order('logged_at', { ascending: false })
+      .limit(1);
+
+    if (existingError) {
+      throw existingError;
+    }
+
+    if (!existingRows || existingRows.length === 0) {
+      const row = buildSupabaseTranscriptRow(safeRecord);
+      const { error: insertError } = await client
+        .from(supabaseCallTranscriptTable)
+        .insert(row);
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      await syncCallQualificationWorkbook();
+      return;
+    }
+
+    const existing = existingRows[0] || {};
+    const current = (existing?.record && typeof existing.record === 'object') ? existing.record : {};
     const keepIncoming = getTranscriptQualityScore(safeRecord) >= getTranscriptQualityScore(current);
     const merged = mergeCallTranscriptRecord(current, safeRecord);
-    existingRows[matchIndex] = keepIncoming
+    const nextRecord = keepIncoming
       ? { ...merged, loggedAt: safeRecord.loggedAt || merged.loggedAt }
       : { ...merged, loggedAt: current.loggedAt || merged.loggedAt };
 
-    const output = `${existingRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
-    fs.writeFileSync(callTranscriptLogFilePath, output, 'utf8');
-    syncCallQualificationWorkbook();
+    const updateRow = buildSupabaseTranscriptRow(nextRecord);
+    const { error: updateError } = await client
+      .from(supabaseCallTranscriptTable)
+      .update(updateRow)
+      .eq('id', existing.id);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    await syncCallQualificationWorkbook();
   } catch (error) {
     console.error('[call-transcript-log] Failed to append log:', error?.message || error);
   }
 }
 
-function parseLeadTimestampToIso(value = '') {
-  const normalized = String(value || '').trim();
-  if (!normalized) {
-    return '';
+function logSupabaseNotConfigured(context = 'supabase') {
+  if (!supabaseUrl || !supabaseServiceKey) {
+    console.warn(`[${context}] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.`);
   }
-
-  const parsed = new Date(normalized.replace(',', ''));
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
 }
 
-function buildLeadTranscriptMessages(lead = {}) {
-  const transcript = String(lead?.transcript || '').trim();
-  if (!transcript) {
-    const fallbackText = String(lead?.summary || lead?.jobDescription || '').trim();
-    return fallbackText ? [{ role: 'assistant', text: fallbackText }] : [];
-  }
-
-  const messages = transcript
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trim())
-    .filter(Boolean)
-    .map((line) => {
-      const matched = line.match(/^(Agent|Caller|User|Prospect)\s*:\s*(.*)$/i);
-      if (!matched) {
-        return { role: 'assistant', text: line };
-      }
-
-      const label = String(matched[1] || '').trim().toLowerCase();
-      const role = label === 'caller' || label === 'user' || label === 'prospect' ? 'user' : 'assistant';
-      return {
-        role,
-        text: String(matched[2] || '').trim()
-      };
-    })
-    .filter((item) => Boolean(item?.text));
-
-  return messages.length > 0 ? messages : [{ role: 'assistant', text: transcript }];
+function buildSupabaseConversationRow(record = {}) {
+  return {
+    logged_at: record.loggedAt || new Date().toISOString(),
+    call_sid: String(record?.callSid || '').trim() || null,
+    conversation_id: String(record?.conversationId || '').trim() || null,
+    caller_phone: String(record?.callerPhone || '').trim() || null,
+    source: String(record?.source || '').trim() || null,
+    event: String(record?.event || '').trim() || null,
+    webhook_type: String(record?.webhookType || '').trim() || null,
+    record
+  };
 }
 
-function readMarketingLeadSnapshots(limit = 50) {
-  if (!fs.existsSync(marketingLeadsFilePath)) {
+function buildSupabaseTranscriptRow(record = {}) {
+  return {
+    logged_at: record.loggedAt || new Date().toISOString(),
+    call_sid: String(record?.callSid || '').trim() || null,
+    conversation_id: String(record?.conversationId || '').trim() || null,
+    caller_phone: String(record?.callerPhone || '').trim() || null,
+    source: String(record?.source || '').trim() || null,
+    event: String(record?.event || '').trim() || null,
+    transcript_snippet: String(record?.transcriptSnippet || '').trim() || null,
+    messages: Array.isArray(record?.messages) ? record.messages : null,
+    update_count: Number(record?.updateCount || 0) || 0,
+    record
+  };
+}
+
+async function readConversationLog(limit = 100) {
+  const client = getSupabaseClient();
+  if (!client) {
+    logSupabaseNotConfigured('conversation-log');
     return [];
   }
 
-  try {
-    const raw = fs.readFileSync(marketingLeadsFilePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    const leads = Array.isArray(parsed) ? parsed : [];
+  const { data, error } = await client
+    .from(supabaseConversationLogTable)
+    .select('record, logged_at')
+    .order('logged_at', { ascending: false })
+    .limit(limit);
 
-    return leads
-      .slice(Math.max(0, leads.length - limit))
-      .map((lead, index) => {
-        const loggedAt = parseLeadTimestampToIso(lead?.time) || new Date().toISOString();
-        const callerPhone = normalizePhone(String(lead?.callerPhone || '').trim());
-        const leadId = String(lead?.id || `lead-${index + 1}`).trim();
-        const transcriptMessages = buildLeadTranscriptMessages(lead);
-        const transcriptSnippet = String(lead?.summary || lead?.transcript || '').trim();
-
-        return {
-          loggedAt,
-          source: 'marketing-leads',
-          event: 'lead-summary',
-          callSid: leadId,
-          conversationId: leadId,
-          callerPhone,
-          callStatus: 'completed',
-          to: callerPhone,
-          from: '',
-          conversationLanguage: 'en',
-          startedAt: loggedAt,
-          lastAt: loggedAt,
-          updateCount: 1,
-          messages: transcriptMessages,
-          transcriptSnippet,
-          leadDisposition: lead?.transferSuggested ? 'willing_to_join' : 'not_willing_to_join',
-          willingToJoin: Boolean(lead?.wantsMoreInfo || lead?.transferSuggested),
-          response: lead?.transferSuggested ? 'Willing to join' : 'Not willing to join',
-          leadEvidence: String(lead?.jobDescription || lead?.summary || '').trim(),
-          callerName: String(lead?.callerName || '').trim(),
-          serviceInterest: String(lead?.serviceInterest || '').trim(),
-          urgency: String(lead?.urgency || '').trim(),
-          interestLevel: String(lead?.interestLevel || '').trim()
-        };
-      })
-      .reverse();
-  } catch (error) {
-    console.error('[marketing-leads] Failed to read fallback snapshots:', error?.message || error);
+  if (error) {
+    console.error('[conversation-log] Failed to read logs:', error?.message || error);
     return [];
   }
-}
 
-function readConversationLog(limit = 100) {
-  if (!fs.existsSync(conversationLogFilePath)) {
-    return readMarketingLeadSnapshots(limit);
-  }
-
-  const raw = fs.readFileSync(conversationLogFilePath, 'utf8');
-  if (!raw.trim()) {
-    return readMarketingLeadSnapshots(limit);
-  }
-
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const selected = lines.slice(Math.max(0, lines.length - limit));
-  const parsed = [];
-
-  for (const line of selected) {
-    try {
-      parsed.push(JSON.parse(line));
-    } catch (_err) {
-      parsed.push({ rawLine: line, parseError: true });
+  return (data || []).map((row) => {
+    const record = (row?.record && typeof row.record === 'object') ? row.record : {};
+    if (!record.loggedAt) {
+      record.loggedAt = row?.logged_at || new Date().toISOString();
     }
-  }
-
-  return parsed.reverse();
+    return record;
+  });
 }
 
-function readCallTranscriptSnapshots(limit = 1500) {
-  if (!fs.existsSync(callTranscriptLogFilePath)) {
-    return readMarketingLeadSnapshots(limit);
+async function readCallTranscriptSnapshots(limit = 1500) {
+  const client = getSupabaseClient();
+  if (!client) {
+    logSupabaseNotConfigured('call-transcript-log');
+    return [];
   }
 
-  const raw = fs.readFileSync(callTranscriptLogFilePath, 'utf8');
-  if (!raw.trim()) {
-    return readMarketingLeadSnapshots(limit);
+  const { data, error } = await client
+    .from(supabaseCallTranscriptTable)
+    .select('record, logged_at')
+    .order('logged_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('[call-transcript-log] Failed to read transcripts:', error?.message || error);
+    return [];
   }
 
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const selected = lines.slice(Math.max(0, lines.length - limit));
-  const parsed = [];
-
-  for (const line of selected) {
-    try {
-      parsed.push(JSON.parse(line));
-    } catch (_err) {
-      // Ignore malformed transcript lines.
+  const rows = (data || []).map((row) => {
+    const record = (row?.record && typeof row.record === 'object') ? row.record : {};
+    if (!record.loggedAt) {
+      record.loggedAt = row?.logged_at || new Date().toISOString();
     }
-  }
+    return record;
+  });
 
-  return parsed;
+  return rows.reverse();
 }
-
-function buildTranscriptSnapshotDedupeKey(record = {}) {
-  const event = String(record?.event || '').trim();
-  const conversationId = String(record?.conversationId || '').trim();
-  const callSid = String(record?.callSid || '').trim();
-  const loggedAt = String(record?.loggedAt || '').trim();
-  return [event, conversationId || callSid, loggedAt].join('|');
-}
-
-function backfillTranscriptSnapshotsFromConversationLog(limit = 6000) {
+async function backfillTranscriptSnapshotsFromConversationLog(limit = 6000) {
   try {
-    const entries = readConversationLog(limit);
+    const entries = await readConversationLog(limit);
     if (!Array.isArray(entries) || entries.length === 0) {
       return 0;
     }
 
-    const existingRows = readCallTranscriptSnapshots(12000);
+    const existingRows = await readCallTranscriptSnapshots(12000);
     const existingKeys = new Set(existingRows.map((row) => buildTranscriptSnapshotDedupeKey(row)));
     const toAppend = [];
 
@@ -1336,7 +1381,7 @@ function backfillTranscriptSnapshotsFromConversationLog(limit = 6000) {
       const transcriptSnippet = String(extractTranscriptSnippet(payload) || '').trim();
 
       if (!callSid && callerPhone) {
-        callSid = findRecentCallSidByPhoneFromLog(callerPhone);
+        callSid = await findRecentCallSidByPhoneFromLog(callerPhone);
       }
 
       if (!callSid && !conversationId) {
@@ -1369,7 +1414,7 @@ function backfillTranscriptSnapshotsFromConversationLog(limit = 6000) {
     }
 
     for (const row of toAppend) {
-      appendCallTranscriptSnapshot(row);
+      await appendCallTranscriptSnapshotAsync(row);
     }
 
     return toAppend.length;
@@ -1559,14 +1604,14 @@ function extractCallerPhone(payload = {}, query = {}) {
   return '';
 }
 
-function findRecentCallSidByPhoneFromLog(callerPhone = '') {
+async function findRecentCallSidByPhoneFromLog(callerPhone = '') {
   const normalizedCallerPhone = normalizePhone(callerPhone);
   if (!normalizedCallerPhone) {
     return '';
   }
 
   const targetCandidates = new Set(getPhoneLookupCandidates(normalizedCallerPhone));
-  const entries = readConversationLog(Math.max(500, Math.min(CONVERSATION_LOG_RETENTION_LIMIT, 3000)));
+  const entries = await readConversationLog(Math.max(500, Math.min(CONVERSATION_LOG_RETENTION_LIMIT, 3000)));
 
   for (const entry of entries) {
     if (String(entry?.source || '').trim() !== 'twilio' || String(entry?.event || '').trim() !== 'call-status') {
@@ -2317,9 +2362,10 @@ app.get('/tester/config-status', async (req, res) => {
     resolvedPublicBaseHealth: resolvedPublicBase.health,
     twilioFromNumber: process.env.TWILIO_PHONE_NUMBER || '',
     companyName: getCompanyName(),
-    conversationLogFile: conversationLogFilePath,
+    supabaseUrl: supabaseUrl || '',
+    conversationLogTable: supabaseConversationLogTable,
     conversationLogRetentionLimit: CONVERSATION_LOG_RETENTION_LIMIT,
-    callTranscriptLogFile: callTranscriptLogFilePath,
+    callTranscriptTable: supabaseCallTranscriptTable,
     callQualificationWorkbookFile: callQualificationWorkbookFilePath
   });
 });
@@ -2328,16 +2374,16 @@ app.get('/tester/agent-playbook', (_req, res) => {
   return res.status(200).json(getAgentPlaybook());
 });
 
-app.get('/tester/conversation-log', (req, res) => {
+app.get('/tester/conversation-log', async (req, res) => {
   const requestedLimit = Number(req.query?.limit || 100);
   const limit = Number.isFinite(requestedLimit)
     ? Math.max(1, Math.min(CONVERSATION_LOG_RETENTION_LIMIT, Math.round(requestedLimit)))
     : CONVERSATION_LOG_RETENTION_LIMIT;
 
-  const entries = readConversationLog(limit);
+  const entries = await readConversationLog(limit);
 
   return res.status(200).json({
-    file: conversationLogFilePath,
+    table: supabaseConversationLogTable,
     total: entries.length,
     count: entries.length,
     limit,
@@ -2345,43 +2391,43 @@ app.get('/tester/conversation-log', (req, res) => {
   });
 });
 
-app.get('/tester/all-logs', (req, res) => {
+app.get('/tester/all-logs', async (req, res) => {
   const requestedLimit = Number(req.query?.limit || CONVERSATION_LOG_RETENTION_LIMIT);
   const limit = Number.isFinite(requestedLimit)
     ? Math.max(1, Math.min(CONVERSATION_LOG_RETENTION_LIMIT, Math.round(requestedLimit)))
     : CONVERSATION_LOG_RETENTION_LIMIT;
 
-  const entries = readConversationLog(limit);
+  const entries = await readConversationLog(limit);
 
   return res.status(200).json({
-    file: conversationLogFilePath,
+    table: supabaseConversationLogTable,
     count: entries.length,
     limit,
     entries
   });
 });
 
-app.get('/tester/call-conversations', (req, res) => {
+app.get('/tester/call-conversations', async (req, res) => {
   const requestedLimit = Number(req.query?.limit || 25);
   const limit = Number.isFinite(requestedLimit)
     ? Math.max(1, Math.min(200, Math.round(requestedLimit)))
     : 25;
 
-  const transcriptSnapshots = readCallTranscriptSnapshots(3000);
-  const fallbackSnapshots = buildConversationSnapshotsFromLogEntries(readConversationLog(3000));
+  const transcriptSnapshots = await readCallTranscriptSnapshots(3000);
+  const fallbackSnapshots = buildConversationSnapshotsFromLogEntries(await readConversationLog(3000));
   const rows = buildConversationRowsFromSnapshots([...fallbackSnapshots, ...transcriptSnapshots], limit);
 
   return res.status(200).json({
-    conversationLogFile: conversationLogFilePath,
-    transcriptLogFile: callTranscriptLogFilePath,
+    conversationLogTable: supabaseConversationLogTable,
+    transcriptLogTable: supabaseCallTranscriptTable,
     count: rows.length,
     rows
   });
 });
 
-app.get('/tester/call-qualifications', (req, res) => {
-  const syncResult = syncCallQualificationWorkbook();
-  const transcriptRows = readCallTranscriptSnapshots(20000);
+app.get('/tester/call-qualifications', async (req, res) => {
+  const syncResult = await syncCallQualificationWorkbook();
+  const transcriptRows = await readCallTranscriptSnapshots(20000);
   const rows = buildQualificationWorkbookRows(buildConversationRowsFromSnapshots(transcriptRows, 5000));
 
   return res.status(syncResult.ok ? 200 : 500).json({
@@ -2392,8 +2438,8 @@ app.get('/tester/call-qualifications', (req, res) => {
   });
 });
 
-app.get('/tester/call-qualifications.xlsx', (req, res) => {
-  const syncResult = syncCallQualificationWorkbook();
+app.get('/tester/call-qualifications.xlsx', async (req, res) => {
+  const syncResult = await syncCallQualificationWorkbook();
 
   if (!syncResult.ok || !fs.existsSync(callQualificationWorkbookFilePath)) {
     return res.status(500).json(syncResult);
@@ -2402,7 +2448,7 @@ app.get('/tester/call-qualifications.xlsx', (req, res) => {
   return res.download(callQualificationWorkbookFilePath, path.basename(callQualificationWorkbookFilePath));
 });
 
-app.get('/tester/call-transcript', (req, res) => {
+app.get('/tester/call-transcript', async (req, res) => {
   const requestedCallSid = String(req.query?.callSid || '').trim();
   const requestedCallerPhone = normalizePhone(String(req.query?.callerPhone || req.query?.to || '').trim());
   if (!requestedCallSid && !requestedCallerPhone) {
@@ -2411,8 +2457,8 @@ app.get('/tester/call-transcript', (req, res) => {
     });
   }
 
-  const logEntries = readConversationLog(5000);
-  const transcriptSnapshots = readCallTranscriptSnapshots(5000);
+  const logEntries = await readConversationLog(5000);
+  const transcriptSnapshots = await readCallTranscriptSnapshots(5000);
   const fallbackSnapshots = buildConversationSnapshotsFromLogEntries(logEntries);
   const rows = buildConversationRowsFromSnapshots([...fallbackSnapshots, ...transcriptSnapshots], 5000);
   const getRowTranscriptText = (candidateRow) => buildHumanReadableTranscript(
@@ -2965,7 +3011,7 @@ async function handleElevenLabsWebhook(req, res, receivedVia = '/elevenlabs/webh
     || findSingleActiveTransferCandidateCallSid();
 
   if (!callSid && callerPhone) {
-    callSid = findRecentCallSidByPhoneFromLog(callerPhone);
+    callSid = await findRecentCallSidByPhoneFromLog(callerPhone);
   }
 
   if (callSid && callerPhone) {
@@ -3066,19 +3112,23 @@ function startServer(initialPort) {
   const tryListen = () => {
     attempts += 1;
     const server = app.listen(activePort, () => {
-      const backfilledCount = backfillTranscriptSnapshotsFromConversationLog();
-      if (backfilledCount > 0) {
-        console.log(`[call-transcript-log] Backfilled ${backfilledCount} transcript snapshot(s) from conversation history.`);
-      }
-      const workbookSync = syncCallQualificationWorkbook();
-      if (workbookSync.ok) {
-        console.log(`[call-qualification-export] Workbook updated: ${workbookSync.file}`);
-      }
-      checkConfig();
-      console.log(`Marketing Voice Agent running on port ${activePort}`);
-      if (activePort !== requestedPort) {
-        console.log(`[startup] Requested port ${requestedPort} was unavailable. Using fallback port ${activePort}.`);
-      }
+      (async () => {
+        const backfilledCount = await backfillTranscriptSnapshotsFromConversationLog();
+        if (backfilledCount > 0) {
+          console.log(`[call-transcript-log] Backfilled ${backfilledCount} transcript snapshot(s) from conversation history.`);
+        }
+        const workbookSync = await syncCallQualificationWorkbook();
+        if (workbookSync.ok) {
+          console.log(`[call-qualification-export] Workbook updated: ${workbookSync.file}`);
+        }
+        await checkConfig();
+        console.log(`Marketing Voice Agent running on port ${activePort}`);
+        if (activePort !== requestedPort) {
+          console.log(`[startup] Requested port ${requestedPort} was unavailable. Using fallback port ${activePort}.`);
+        }
+      })().catch((error) => {
+        console.error('[startup] Post-start tasks failed:', error?.message || error);
+      });
     });
 
     server.on('error', (error) => {
