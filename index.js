@@ -66,6 +66,9 @@ const conversationLogFilePath = path.isAbsolute(String(process.env.CONVERSATION_
 const callTranscriptLogFilePath = path.isAbsolute(String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim())
   ? String(process.env.CALL_TRANSCRIPT_LOG_FILE || '').trim()
   : path.join(__dirname, String(process.env.CALL_TRANSCRIPT_LOG_FILE || 'data/call-transcripts.jsonl').trim());
+const marketingLeadsFilePath = path.isAbsolute(String(process.env.MARKETING_LEADS_FILE || '').trim())
+  ? String(process.env.MARKETING_LEADS_FILE || '').trim()
+  : path.join(__dirname, String(process.env.MARKETING_LEADS_FILE || 'data/marketing-leads.json').trim());
 const callQualificationWorkbookFilePath = path.isAbsolute(String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim())
   ? String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || '').trim()
   : path.join(__dirname, String(process.env.CALL_QUALIFICATION_WORKBOOK_FILE || 'data/call-qualifications.xlsx').trim());
@@ -1149,14 +1152,105 @@ function appendCallTranscriptSnapshot(record = {}) {
   }
 }
 
+function parseLeadTimestampToIso(value = '') {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const parsed = new Date(normalized.replace(',', ''));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
+}
+
+function buildLeadTranscriptMessages(lead = {}) {
+  const transcript = String(lead?.transcript || '').trim();
+  if (!transcript) {
+    const fallbackText = String(lead?.summary || lead?.jobDescription || '').trim();
+    return fallbackText ? [{ role: 'assistant', text: fallbackText }] : [];
+  }
+
+  const messages = transcript
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trim())
+    .filter(Boolean)
+    .map((line) => {
+      const matched = line.match(/^(Agent|Caller|User|Prospect)\s*:\s*(.*)$/i);
+      if (!matched) {
+        return { role: 'assistant', text: line };
+      }
+
+      const label = String(matched[1] || '').trim().toLowerCase();
+      const role = label === 'caller' || label === 'user' || label === 'prospect' ? 'user' : 'assistant';
+      return {
+        role,
+        text: String(matched[2] || '').trim()
+      };
+    })
+    .filter((item) => Boolean(item?.text));
+
+  return messages.length > 0 ? messages : [{ role: 'assistant', text: transcript }];
+}
+
+function readMarketingLeadSnapshots(limit = 50) {
+  if (!fs.existsSync(marketingLeadsFilePath)) {
+    return [];
+  }
+
+  try {
+    const raw = fs.readFileSync(marketingLeadsFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const leads = Array.isArray(parsed) ? parsed : [];
+
+    return leads
+      .slice(Math.max(0, leads.length - limit))
+      .map((lead, index) => {
+        const loggedAt = parseLeadTimestampToIso(lead?.time) || new Date().toISOString();
+        const callerPhone = normalizePhone(String(lead?.callerPhone || '').trim());
+        const leadId = String(lead?.id || `lead-${index + 1}`).trim();
+        const transcriptMessages = buildLeadTranscriptMessages(lead);
+        const transcriptSnippet = String(lead?.summary || lead?.transcript || '').trim();
+
+        return {
+          loggedAt,
+          source: 'marketing-leads',
+          event: 'lead-summary',
+          callSid: leadId,
+          conversationId: leadId,
+          callerPhone,
+          callStatus: 'completed',
+          to: callerPhone,
+          from: '',
+          conversationLanguage: 'en',
+          startedAt: loggedAt,
+          lastAt: loggedAt,
+          updateCount: 1,
+          messages: transcriptMessages,
+          transcriptSnippet,
+          leadDisposition: lead?.transferSuggested ? 'willing_to_join' : 'not_willing_to_join',
+          willingToJoin: Boolean(lead?.wantsMoreInfo || lead?.transferSuggested),
+          response: lead?.transferSuggested ? 'Willing to join' : 'Not willing to join',
+          leadEvidence: String(lead?.jobDescription || lead?.summary || '').trim(),
+          callerName: String(lead?.callerName || '').trim(),
+          serviceInterest: String(lead?.serviceInterest || '').trim(),
+          urgency: String(lead?.urgency || '').trim(),
+          interestLevel: String(lead?.interestLevel || '').trim()
+        };
+      })
+      .reverse();
+  } catch (error) {
+    console.error('[marketing-leads] Failed to read fallback snapshots:', error?.message || error);
+    return [];
+  }
+}
+
 function readConversationLog(limit = 100) {
   if (!fs.existsSync(conversationLogFilePath)) {
-    return [];
+    return readMarketingLeadSnapshots(limit);
   }
 
   const raw = fs.readFileSync(conversationLogFilePath, 'utf8');
   if (!raw.trim()) {
-    return [];
+    return readMarketingLeadSnapshots(limit);
   }
 
   const lines = raw
@@ -1180,12 +1274,12 @@ function readConversationLog(limit = 100) {
 
 function readCallTranscriptSnapshots(limit = 1500) {
   if (!fs.existsSync(callTranscriptLogFilePath)) {
-    return [];
+    return readMarketingLeadSnapshots(limit);
   }
 
   const raw = fs.readFileSync(callTranscriptLogFilePath, 'utf8');
   if (!raw.trim()) {
-    return [];
+    return readMarketingLeadSnapshots(limit);
   }
 
   const lines = raw

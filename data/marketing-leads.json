@@ -1,0 +1,30 @@
+[
+  {
+    "id": "lead-1776437139428",
+    "time": "17 Apr 2026, 20:15",
+    "callerPhone": "+917567704665",
+    "callerName": "No Just The Chatbot",
+    "serviceInterest": "Business Automation + IT Services",
+    "interestLevel": "Positive",
+    "wantsMoreInfo": true,
+    "transferSuggested": true,
+    "urgency": "High",
+    "summary": "The conversation involves a user expressing interest in building a custom AI chatbot from scratch. The agent, representing Desireinfoweb, a certified Microsoft Partner, offers assistance in developing the chatbot and inquires about the specific functions the user desires. The agent emphasizes their expertise in creating secure and scalable AI solutions tailored to business needs and offers to connect the user with their Business Development Manager for further assistance. The interaction is professional and focused on understanding the user's requirements for the chatbot project.",
+    "transcript": "Agent: Hello, this is Desireinfoweb, a certified Microsoft Partner.\nWe help businesses worldwide grow with AI, Microsoft 365, and digital transformation solutions.\nAre you looking for business automation, IT services, or AI-powered solutions today?\nCaller: Thank you.\nAgent: You're welcome. To help me understand your needs better, could you tell me if you are currently looking for business automation, IT services, or AI-powered solutions for your business?\nCaller: I want to build an AI chatbot.\nAgent: That's great to hear! Are you looking to integrate this AI chatbot into your existing systems, or do you need a custom solution built from scratch? Additionally, what specific functions or tasks would you like the chatbot to perform for your business?\nCaller: Yeah, I want to build a chatbot from scratch.\nAgent: We can certainly help you build a custom AI chatbot from scratch. To understand your needs better, what is your biggest challenge right now—is it manual processes, collaboration, analytics, or customer engagement that you hope the chatbot will address?\nCaller: No just the chatbot.\nAgent: Understood. We specialize in creating AI chatbots tailored to your specific requirements. Our solutions are secure and scalable, ensuring they fit seamlessly into your business operations. Would you like to know more about how we can assist you in developing this chatbot? If you're interested, I can connect you directly to Sajid, our Business Development Manager, for a...",
+    "jobDescription": "a custom solution built from scratch? Additionally, what specific functions or tasks would you like the chatbot to perform for your business?"
+  },
+  {
+    "id": "lead-1776437387790",
+    "time": "17 Apr 2026, 20:19",
+    "callerPhone": "+919904014696",
+    "callerName": "Not captured",
+    "serviceInterest": "Business Automation + IT Services",
+    "interestLevel": "Neutral/Unknown",
+    "wantsMoreInfo": false,
+    "transferSuggested": false,
+    "urgency": "Medium",
+    "summary": "The conversation began with Desireinfoweb offering business automation and IT services. The user expressed interest in business automation and AI services. The agent offered an immediate consultation with Sajid, which the user declined, requesting instead that their interest be shared for a later connection. The agent confirmed Sajid would reach out.",
+    "transcript": "Agent: Hi, this is Desireinfoweb.\nWe help businesses with automation and IT services.\nAre you looking for business automation or IT services?\nCaller: I'm looking for business automation and AI services. Could you please tell me about the Desire InfoWeb AI services?\nAgent: Great, we specialize in AI-driven business automation to save time and boost efficiency.Would you like to connect with Sajid for a quick consultation now?\nCaller: Not now, but I will connect later. You can share my interest with him. Thank you!\nAgent: No problem. I’ll have Sajid reach out to you soon. Thank you!",
+    "jobDescription": "See transcript"
+  }
+]
