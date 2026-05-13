@@ -1034,17 +1034,17 @@
         return 'en';
       }
 
-      async function getBrowserDemoConversationToken() {
-        const { response } = await requestApi('/tester/browser-demo-token', { method: 'GET' }, 15000);
+      async function getBrowserDemoConversationSession() {
+        const { response } = await requestApi('/tester/browser-demo-signed-url', { method: 'GET' }, 15000);
         const text = await getTextResponse(response);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${text}`);
         }
 
         const parsed = JSON.parse(text);
-        const conversationToken = String(parsed?.conversationToken || '').trim();
-        if (!conversationToken) {
-          throw new Error('Conversation token missing from browser demo session response.');
+        const signedUrl = String(parsed?.signedUrl || '').trim();
+        if (!signedUrl) {
+          throw new Error('Signed URL missing from browser demo session response.');
         }
 
         return parsed;
@@ -1121,16 +1121,15 @@
         setBrowserDemoStatus('Connecting to ElevenLabs agent...');
 
         try {
-          const [{ conversationToken }, Conversation] = await Promise.all([
-            getBrowserDemoConversationToken(),
+          const [{ signedUrl }, Conversation] = await Promise.all([
+            getBrowserDemoConversationSession(),
             getBrowserDemoConversationFactory()
           ]);
 
           appendBrowserDemoLine('System: Starting live ElevenLabs browser conversation.');
 
           browserDemoConversation = await Conversation.startSession({
-            conversationToken,
-            connectionType: 'webrtc',
+            signedUrl,
             overrides: {
               agent: {
                 language: getBrowserDemoLanguageOverride(selectedLanguage)
@@ -1257,15 +1256,17 @@
           const logsResult = await requestApi('/tester/all-logs?limit=60', { method: 'GET' }, 10000);
           const logsText = await getTextResponse(logsResult.response);
 
-          if (!logsResult.response.ok) {
-            allLogsOut.textContent = `HTTP ${logsResult.response.status} from ${logsResult.requestUrl}\n${logsText}`;
-          } else {
-            try {
-              const parsed = JSON.parse(logsText);
-              const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
-              allLogsOut.textContent = JSON.stringify(entries, null, 2);
-            } catch (_err) {
-              allLogsOut.textContent = logsText;
+          if (allLogsOut) {
+            if (!logsResult.response.ok) {
+              allLogsOut.textContent = `HTTP ${logsResult.response.status} from ${logsResult.requestUrl}\n${logsText}`;
+            } else {
+              try {
+                const parsed = JSON.parse(logsText);
+                const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+                allLogsOut.textContent = JSON.stringify(entries, null, 2);
+              } catch (_err) {
+                allLogsOut.textContent = logsText;
+              }
             }
           }
         } catch (error) {
